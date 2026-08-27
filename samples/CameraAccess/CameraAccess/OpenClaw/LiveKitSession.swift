@@ -196,6 +196,9 @@ final class LiveKitSession: NSObject, ObservableObject {
   func startPreview() async {
     guard state == .disconnected || isFailed, previewTrack == nil else { return }
     let track: LocalVideoTrack
+    // Otherwise only set in start(); without it a call-free preview renders
+    // neither frames nor the waiting placeholder, just black.
+    usingGlassesSource = SettingsManager.shared.captureSource == .glasses
     if SettingsManager.shared.captureSource == .glasses {
       // Glasses preview is a buffer track fed by pushGlassesFrame; there is
       // no capture device to open.

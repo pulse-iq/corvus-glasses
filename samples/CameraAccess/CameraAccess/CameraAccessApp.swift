@@ -56,10 +56,15 @@ struct VisionRootView: View {
   /// `-openSettings` presents Settings at launch, so screens can be captured
   /// on a simulator with no GUI to tap through.
   @State private var showSettings = ProcessInfo.processInfo.arguments.contains("-openSettings")
-  /// Builds ship without a gateway token (it is per-person identity), so an
-  /// install with none configured sees only the access-code gate.
-  @State private var needsAccessCode =
-    SettingsManager.shared.agentBackend == .cloud && !GeminiConfig.isAgentConfigured
+  /// Upstream ships without a gateway token (it is per-person identity), so an
+  /// install with none configured sees only their access-code gate.
+  ///
+  /// Corvus is not a user of that gateway. Stage 1 calls a vision model
+  /// directly and Stage 2's backend is still undecided, so the gate only stands
+  /// between us and the Watcher, holding out for a code that
+  /// api.visionagents.app alone can issue. Restore the check if we ever adopt
+  /// their gateway; if we run our own, point cloudGatewayURL at it instead.
+  @State private var needsAccessCode = false
 
   var body: some View {
     Group {

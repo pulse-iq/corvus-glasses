@@ -7,3 +7,9 @@ samples/CameraAccessAndroid/app/build/
 samples/CameraAccessAndroid/app/src/main/java/**/Secrets.kt
 samples/CameraAccessAndroid/build/
 samples/CameraAccessAndroid/local.properties
+
+# Secrets. Backups and per-environment overrides hold the same live keys as
+# .env, so ignore the whole family and let only the template through.
+.env
+.env.*
+!.env.example

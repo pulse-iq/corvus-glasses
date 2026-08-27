@@ -24,9 +24,17 @@ struct StreamSessionView: View {
   private let wearablesViewModel: WearablesViewModel?
   @StateObject private var viewModel: StreamSessionViewModel
   @StateObject private var liveKit = LiveKitSession()
+  /// Corvus Stage 1. Watches the same glasses frames the call publishes and
+  /// decides when a pickup is worth interviewing about.
+  @StateObject private var watcher = WatcherCoordinator(study: StudyStore.shared.active)
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
   @AppStorage(IntelligenceEngine.defaultsKey) private var intelligenceRaw = IntelligenceEngine.gemini.rawValue
   @State private var glassesAutoStarted = false
+  /// The call screen is the app's front door but carries no settings
+  /// affordance, so on this fork the Watcher was unreachable from the UI.
+  @State private var showSettings = false
+  @AppStorage("corvus.showWatcherHUD") private var showHUD = true
+  @AppStorage("corvus.watchOnCameraScreen") private var watchHere = true
 
   private var captureSource: CaptureSource {
     CaptureSource(rawValue: captureSourceRaw) ?? .iPhoneCamera
@@ -84,19 +92,70 @@ struct StreamSessionView: View {
       } else {
         Color.black.edgesIgnoringSafeArea(.all)
       }
+
+      // Settings, and through it the Watcher. Overlaid rather than placed in a
+      // toolbar because this screen has no navigation chrome to hang one on.
+      VStack {
+        HStack {
+          Spacer()
+          Button {
+            showSettings = true
+          } label: {
+            Image(systemName: "gearshape.fill")
+              .foregroundStyle(.white)
+              .padding(10)
+              .background(.black.opacity(0.45), in: Circle())
+          }
+          .padding(.trailing, 16)
+          .padding(.top, 8)
+        }
+        Spacer()
+
+        // Stage 1, visible. Bottom-left so it clears the call chrome.
+        if showHUD {
+          HStack {
+            WatcherHUD(watcher: watcher)
+              .frame(maxWidth: 300, alignment: .leading)
+            Spacer()
+          }
+          .padding(.leading, 16)
+          .padding(.bottom, 110)
+        }
+      }
+    }
+    .sheet(isPresented: $showSettings) {
+      SettingsView()
     }
     .task {
       viewModel.onDecodedFrame = { [weak liveKit] pixelBuffer in
         liveKit?.pushGlassesFrame(pixelBuffer)
       }
-      if captureSource == .iPhoneCamera {
-        await liveKit.start()
+      // Stage 1 rides the same feed. Its own sampler throttles to ~1fps, so
+      // handing it every frame costs a closure call.
+      viewModel.onAnalysisFrame = { [weak watcher] image in
+        watcher?.submit(image: image)
       }
+      if watchHere { watcher.start() }
+      if CorvusConfig.useLiveKitCall {
+        if captureSource == .iPhoneCamera {
+          await liveKit.start()
+        }
+      } else {
+        // The preview is otherwise only ever opened as a side effect of
+        // start(), so skipping the call left the screen black. It is purely
+        // local -- no room, no gateway -- and it covers both sources: the back
+        // camera on the phone, and the buffer track pushGlassesFrame writes
+        // into on the glasses.
+        await liveKit.startPreview()
+      }
+    }
+    .onDisappear {
+      watcher.stop()
     }
     .onChange(of: viewModel.isStreaming) { streaming in
       // Glasses mode: the call rides the DAT stream's lifecycle -- frames
       // start flowing, the room opens; the stream ends, the call ends.
-      guard captureSource == .glasses else { return }
+      guard captureSource == .glasses, CorvusConfig.useLiveKitCall else { return }
       Task {
         if streaming {
           await liveKit.start()

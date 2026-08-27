@@ -50,10 +50,26 @@ struct SettingsView: View {
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
   @AppStorage(IntelligenceEngine.defaultsKey) private var intelligenceRaw = IntelligenceEngine.gemini.rawValue
   @AppStorage(SettingsManager.showCaptionsKey) private var showCaptions = true
+  @AppStorage("corvus.watchOnCameraScreen") private var watchOnCameraScreen = true
+  @AppStorage("corvus.showWatcherHUD") private var showWatcherHUD = true
 
   var body: some View {
     NavigationView {
       Form {
+        // Corvus Stage 1 bench. Runs the watcher on the phone camera with no
+        // glasses, room or server -- the only way to tune detection thresholds
+        // without a shopping trip.
+        Section(header: Text("Corvus"), footer: Text(
+          "The watcher runs on whatever the camera screen is showing, glasses "
+          + "included. Turn the overlay off before a participant wears these -- "
+          + "a debug readout changes how someone behaves on camera.")) {
+          NavigationLink("Watcher bench") {
+            CorvusWatcherView()
+          }
+          Toggle("Watch the camera screen", isOn: $watchOnCameraScreen)
+          Toggle("Show detection overlay", isOn: $showWatcherHUD)
+        }
+
         Section(header: Text("Camera"), footer: Text(captureSourceRaw == CaptureSource.glasses.rawValue
           ? "Streams from your Meta glasses. Connecting them happens on the main screen."
           : "Uses this phone's camera. The app opens straight into it, with voice ready.")) {

@@ -116,6 +116,12 @@ class StreamSessionViewModel: ObservableObject {
   /// here, so the room publishes exactly what the glasses see.
   var onDecodedFrame: ((CVPixelBuffer) -> Void)?
 
+  /// Corvus Stage 1 tap: every frame the app turns into an image, foreground
+  /// and background alike. Separate from `onDecodedFrame`, which feeds the
+  /// LiveKit publisher and fires only on the background path -- the watcher
+  /// needs a continuous feed regardless of whether the phone is in a pocket.
+  var onAnalysisFrame: ((UIImage) -> Void)?
+
   private func setupVideoDecoder() {
     videoDecoder.setFrameCallback { [weak self] decodedFrame in
       Task { @MainActor [weak self] in
@@ -128,6 +134,9 @@ class StreamSessionViewModel: ObservableObject {
         let rect = CGRect(x: 0, y: 0, width: width, height: height)
         if let cgImage = self.cpuCIContext.createCGImage(ciImage, from: rect) {
           let image = UIImage(cgImage: cgImage)
+          self.currentVideoFrame = image
+          self.onAnalysisFrame?(image)
+          if !self.hasReceivedFirstFrame { self.hasReceivedFirstFrame = true }
           if self.backgroundFrameCount <= 5 || self.backgroundFrameCount % 120 == 0 {
             NSLog("[Stream] Background frame #%d decoded and forwarded (%dx%d)",
                   self.backgroundFrameCount, width, height)
@@ -169,21 +178,21 @@ class StreamSessionViewModel: ObservableObject {
 
         let isInBackground = UIApplication.shared.applicationState == .background
 
-        if !isInBackground {
+        // One path for both states. Upstream used makeUIImage() in the
+        // foreground, which never produces the CVPixelBuffer that
+        // onDecodedFrame -- and so the glasses preview and the LiveKit
+        // publisher -- depend on: glasses video rendered only while the app was
+        // backgrounded, and went black the moment you looked at it. The decoder
+        // yields the pixel buffer every consumer needs, and it is the only
+        // option in the background anyway, so run it always.
+        if isInBackground {
+          self.backgroundFrameCount += 1
+        } else {
           self.backgroundFrameCount = 0
           self.bgDiagLogged = false
-          if let image = videoFrame.makeUIImage() {
-            self.currentVideoFrame = image
-            if !self.hasReceivedFirstFrame {
-              self.hasReceivedFirstFrame = true
-            }
-          }
-        } else {
-          // In background: makeUIImage() uses VideoToolbox GPU rendering which iOS suspends.
-          // Instead, use our VideoDecoder (VTDecompressionSession) to decode compressed
-          // frames into pixel buffers, then convert via CPU CIContext.
-          self.backgroundFrameCount += 1
+        }
 
+        do {
           let sampleBuffer = videoFrame.sampleBuffer
           let hasCompressedData = CMSampleBufferGetDataBuffer(sampleBuffer) != nil
 
@@ -206,6 +215,9 @@ class StreamSessionViewModel: ObservableObject {
             let rect = CGRect(x: 0, y: 0, width: width, height: height)
             if let cgImage = self.cpuCIContext.createCGImage(ciImage, from: rect) {
               let image = UIImage(cgImage: cgImage)
+              self.currentVideoFrame = image
+              self.onAnalysisFrame?(image)
+              if !self.hasReceivedFirstFrame { self.hasReceivedFirstFrame = true }
             }
             self.videoDecoder.invalidateSession()
           }
