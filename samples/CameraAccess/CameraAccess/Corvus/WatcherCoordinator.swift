@@ -50,9 +50,21 @@ final class WatcherCoordinator: ObservableObject {
     self.interviewer = CorvusConfig.interviewer.make()
   }
 
+  /// The realtime interviewer talks through the call screen's own room, so it
+  /// needs the session that screen owns. Passed in rather than reached for
+  /// globally, because a second LiveKit room would fight this one for the mic.
+  private weak var liveKit: LiveKitSession?
+
+  func attach(liveKit: LiveKitSession) {
+    self.liveKit = liveKit
+    if CorvusConfig.interviewer == .liveKit {
+      interviewer = InterviewerKind.liveKit.make(liveKit: liveKit)
+    }
+  }
+
   func use(_ kind: InterviewerKind) {
     interviewer?.cancel()
-    interviewer = kind.make()
+    interviewer = kind.make(liveKit: liveKit)
     CorvusConfig.interviewer = kind
   }
 

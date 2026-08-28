@@ -143,13 +143,23 @@ final class SettingsManager {
   }
 
   /// Full base URL of the hosted gateway, scheme included (e.g. "https://gw.example.com" or "http://1.2.3.4:8788").
+  // Empty falls back to the compiled default, not just absent. Saving the
+  // Settings sheet writes both fields unconditionally, so a single visit with
+  // the token box blank persists "" -- which is not nil, and would otherwise
+  // shadow a perfectly good default forever.
   var cloudGatewayURL: String {
-    get { defaults.string(forKey: Key.cloudGatewayURL.rawValue) ?? Secrets.cloudGatewayURL }
+    get {
+      let stored = defaults.string(forKey: Key.cloudGatewayURL.rawValue) ?? ""
+      return stored.isEmpty ? Secrets.cloudGatewayURL : stored
+    }
     set { defaults.set(newValue, forKey: Key.cloudGatewayURL.rawValue) }
   }
 
   var cloudGatewayToken: String {
-    get { defaults.string(forKey: Key.cloudGatewayToken.rawValue) ?? Secrets.cloudGatewayToken }
+    get {
+      let stored = defaults.string(forKey: Key.cloudGatewayToken.rawValue) ?? ""
+      return stored.isEmpty ? Secrets.cloudGatewayToken : stored
+    }
     set { defaults.set(newValue, forKey: Key.cloudGatewayToken.rawValue) }
   }
 

@@ -170,6 +170,20 @@ enum CorvusConfig {
     set { UserDefaults.standard.set(newValue, forKey: "corvus.sendTriggerFrameToBrain") }
   }
 
+  /// How long to wait for the worker to join the room before giving up. Short:
+  /// the wearer is standing there in silence, and a worker that has not arrived
+  /// in this long is not coming.
+  static var agentJoinTimeoutSeconds: Double {
+    resolveDouble("corvus.agentJoinTimeoutSeconds", fallback: 20)
+  }
+
+  /// Hard ceiling on a realtime interview. Higher than the turn-based one
+  /// because the model paces itself, but still bounded -- the watcher's lock is
+  /// held for the whole call.
+  static var maxRealtimeInterviewSeconds: Double {
+    resolveDouble("corvus.maxRealtimeInterviewSeconds", fallback: 180)
+  }
+
   // MARK: - Answer capture
 
   /// How long to wait for someone to start talking at all. Generous, because

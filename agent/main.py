@@ -45,6 +45,8 @@ from livekit.agents import (
 )
 from livekit.plugins import google, openai
 
+from corvus_interview import InterviewSession, brief_from_metadata
+
 logger = logging.getLogger("visionclaw-agent")
 
 INSTRUCTIONS = """You are VisionClaw, an AI assistant the user talks to while showing you the
@@ -702,6 +704,9 @@ async def entrypoint(ctx: JobContext):
     except json.JSONDecodeError:
         meta = {}
     engine = meta.get("engine", "gemini")
+    # Corvus: an interview brief in the same metadata, or None for a normal call.
+    corvus_brief = brief_from_metadata(meta)
+    interview = InterviewSession(corvus_brief) if corvus_brief else None
     user_id = participant.identity or "demo"
     logger.info("session start: user=%s engine=%s", user_id, engine)
 
@@ -710,9 +715,17 @@ async def entrypoint(ctx: JobContext):
 
     tracer = Tracer(user_id)
     tracer.emit("session_start", engine=engine, room=ctx.room.name)
-    pump = asyncio.create_task(tracer.pump())
+    # The trace pump POSTs to upstream's gateway, which Corvus does not run --
+    # and _gateway_url() subscripts os.environ, so every flush raises KeyError,
+    # requeues, and retries every few seconds. It also kept the worker from
+    # exiting, so each interview ended with "process did not exit in time,
+    # killing process". Events still accumulate in the tracer; nothing drains
+    # them, which for a one-interview job is the point.
+    pump = None if interview else asyncio.create_task(tracer.pump())
 
     async def _finish_trace() -> None:
+        if pump is None:
+            return
         pump.cancel()
         tracer.emit("session_end")
         # Last chance before the process exits -- a failed attempt re-queues,
@@ -819,15 +832,27 @@ async def entrypoint(ctx: JobContext):
 
     await session.start(
         agent=Agent(
-            instructions=INSTRUCTIONS,
-            tools=[execute, quick_search, show_card, save_note, recall_notes, delete_note],
+            instructions=interview.instructions if interview else INSTRUCTIONS,
+            tools=interview.tools() if interview
+            else [execute, quick_search, show_card, save_note, recall_notes, delete_note],
         ),
         room=ctx.room,
         # Video is opt-in (RoomInputOptions.video_enabled defaults to False);
         # without this the model gets no frames and hallucinates a scene when
         # asked what it sees.
-        room_input_options=RoomInputOptions(video_enabled=True),
+        #
+        # Off for interviews: streaming frames into a Live session fills its
+        # context in well under a minute, and the session then dies mid-answer
+        # with a 1007 "context exhausted" -- observed in the field as the
+        # interviewer simply going silent. Stage 1 has already identified the
+        # product and the brief names it, so the interviewer gains little from
+        # watching and loses the conversation.
+        room_input_options=RoomInputOptions(video_enabled=interview is None),
     )
+
+    if interview:
+        await interview.run(ctx, session, user_id=user_id)
+        return
 
     # Results that finished after a previous call ended are waiting at the
     # gateway; deliver them up front so a hangup never discards an answer.
@@ -847,4 +872,4 @@ async def entrypoint(ctx: JobContext):
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name="corvus-glasses"))

@@ -96,8 +96,10 @@ enum InterviewerKind: String, CaseIterable, Identifiable {
   case scripted
   /// Study's opening question, then a model listens and chooses the follow-ups.
   case conversational
-  /// Not built yet. Listed so the setting exists before the implementation
-  /// does, and so choosing it fails loudly rather than silently doing nothing.
+  /// Realtime, through the LiveKit room and the worker in `agent/`. Needs a
+  /// live session object and a gateway that can mint room tokens, so unlike the
+  /// others it can be selected while unable to run -- which it reports rather
+  /// than failing silently.
   case liveKit
 
   var id: String { rawValue }
@@ -106,16 +108,16 @@ enum InterviewerKind: String, CaseIterable, Identifiable {
     switch self {
     case .scripted: return "Scripted (fixed questions)"
     case .conversational: return "Conversational (model picks follow-ups)"
-    case .liveKit: return "LiveKit realtime (not built)"
+    case .liveKit: return "Realtime (LiveKit + Gemini Live)"
     }
   }
 
   @MainActor
-  func make() -> Interviewer? {
+  func make(liveKit: LiveKitSession? = nil) -> Interviewer? {
     switch self {
     case .scripted: return ScriptedInterviewer()
     case .conversational: return ConversationalInterviewer()
-    case .liveKit: return nil
+    case .liveKit: return LiveKitInterviewer(session: liveKit)
     }
   }
 }

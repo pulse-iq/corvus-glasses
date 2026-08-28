@@ -35,6 +35,10 @@ struct StreamSessionView: View {
   @State private var showSettings = false
   @AppStorage("corvus.showWatcherHUD") private var showHUD = true
   @AppStorage("corvus.watchOnCameraScreen") private var watchHere = true
+  /// Observed here rather than only read at launch: Settings writes this key,
+  /// and the coordinator builds its interviewer once in init, so without a
+  /// watcher on it the picker silently did nothing until the next relaunch.
+  @AppStorage("corvus.interviewer") private var interviewerRaw = InterviewerKind.conversational.rawValue
 
   private var captureSource: CaptureSource {
     CaptureSource(rawValue: captureSourceRaw) ?? .iPhoneCamera
@@ -138,6 +142,8 @@ struct StreamSessionView: View {
         FrameHeartbeat.shared.tick()
         watcher?.submit(image: image)
       }
+      // Realtime interviews run through this screen's room.
+      watcher.attach(liveKit: liveKit)
       if watchHere { watcher.start() }
       if CorvusConfig.useLiveKitCall {
         if captureSource == .iPhoneCamera {
@@ -166,6 +172,11 @@ struct StreamSessionView: View {
           await liveKit.stop()
         }
       }
+    }
+    .onChange(of: interviewerRaw) { raw in
+      // Rebuilds the interviewer in place, so the choice applies to the next
+      // trigger rather than the next launch.
+      if let kind = InterviewerKind(rawValue: raw) { watcher.use(kind) }
     }
     .onChange(of: intelligenceRaw) { _ in
       // The brain is chosen at session start (room-token metadata), so a live

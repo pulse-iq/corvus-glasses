@@ -93,6 +93,10 @@ final class LiveKitSession: NSObject, ObservableObject {
 
   var isActive: Bool { state == .connected || state == .connecting }
 
+  /// Fields to attach to the next `start()`. Set by `LiveKitInterviewer` before
+  /// dialling and cleared by it afterwards, so an ordinary call is unaffected.
+  var pendingSessionContext: [String: String]?
+
   func refreshAgentStatus() {
     guard state == .connected else {
       agentStatus = .none
@@ -265,6 +269,14 @@ final class LiveKitSession: NSObject, ObservableObject {
 
     do {
       let ticket = try await fetchTicket()
+      // Before connect, not after: the worker is dispatched at room creation
+      // and starts talking as soon as it sees a participant, so a handler
+      // registered further down -- behind mic setup and a published video
+      // track -- reliably missed the opening line. Registration is a local
+      // dictionary write and needs no connection.
+      await registerCaptionHandler()
+      await registerCardHandler()
+      await registerTranscriptHandler()
       try await room.connect(url: ticket.url, token: ticket.token)
       try await room.localParticipant.setMicrophone(enabled: true)
       // Camera failure (simulator, permission denied) degrades to voice-only
@@ -292,8 +304,6 @@ final class LiveKitSession: NSObject, ObservableObject {
       } catch {
         NSLog("[LiveKit] camera unavailable, voice-only: %@", error.localizedDescription)
       }
-      registerCaptionHandler()
-      registerCardHandler()
       state = .connected
       resetZoom()
       refreshAgentStatus()
@@ -327,10 +337,9 @@ final class LiveKitSession: NSObject, ObservableObject {
   /// "lk.transcription" topic; each utterance segment is one stream, growing
   /// chunk by chunk. Registration is per-room and survives reconnects, so a
   /// second register on redial throws -- ignored deliberately.
-  private func registerCaptionHandler() {
-    Task { [weak self] in
-      guard let room = self?.room else { return }
-      try? await room.registerTextStreamHandler(for: "lk.transcription") { [weak self] reader, identity in
+  private func registerCaptionHandler() async {
+    do {
+      try await room.registerTextStreamHandler(for: "lk.transcription") { [weak self] reader, identity in
         let isAgent = identity.stringValue.hasPrefix("agent")
         var text = ""
         for try await chunk in reader {
@@ -338,16 +347,36 @@ final class LiveKitSession: NSObject, ObservableObject {
           await self?.showCaption(text, isAgent: isAgent)
         }
       }
+    } catch {
+      // Handlers are per-room and survive reconnects, so a redial throws
+      // "already registered" -- which is the desired state, not a failure.
+      NSLog("[LiveKit] caption handler: %@", error.localizedDescription)
     }
   }
 
-  private func registerCardHandler() {
-    Task { [weak self] in
-      guard let room = self?.room else { return }
-      try? await room.registerTextStreamHandler(for: "vc.ui") { [weak self] reader, _ in
+  /// The agent's own transcript of the interview, as JSON, published just
+  /// before it tears the room down.
+  var onTranscript: ((String) -> Void)?
+
+  private func registerTranscriptHandler() async {
+    do {
+      try await room.registerTextStreamHandler(for: "corvus.transcript") { [weak self] reader, _ in
+        let json = try await reader.readAll()
+        await MainActor.run { self?.onTranscript?(json) }
+      }
+    } catch {
+      NSLog("[LiveKit] transcript handler: %@", error.localizedDescription)
+    }
+  }
+
+  private func registerCardHandler() async {
+    do {
+      try await room.registerTextStreamHandler(for: "vc.ui") { [weak self] reader, _ in
         let json = try await reader.readAll()
         await self?.handleCardJSON(json)
       }
+    } catch {
+      NSLog("[LiveKit] card handler: %@", error.localizedDescription)
     }
   }
 
@@ -419,9 +448,16 @@ final class LiveKitSession: NSObject, ObservableObject {
     request.timeoutInterval = 20
     request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.httpBody = try JSONSerialization.data(withJSONObject: [
+    var payload: [String: Any] = [
       "engine": SettingsManager.shared.intelligenceEngine.rawValue
-    ])
+    ]
+    // Corvus rides along here: the token endpoint copies this into the room
+    // token's participant metadata, which the worker already reads. Sending the
+    // interviewer's whole instruction text rather than a study id keeps the
+    // research instrument on the phone, where the study lives, instead of
+    // splitting it across a Python worker that would then need its own copy.
+    if let context = pendingSessionContext { payload["corvus"] = context }
+    request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
     let (data, response) = try await URLSession.shared.data(for: request)
     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -457,6 +493,22 @@ extension LiveKitSession: RoomDelegate {
   ) {
     guard participant.isAgent else { return }
     Task { @MainActor in self.refreshAgentStatus() }
+  }
+
+  /// A room can end from the server side -- an interview worker calling
+  /// DeleteRoom when it is finished, an admin, a cloud failover. Without this
+  /// the app kept reporting `connected` for a room that no longer existed, and
+  /// anything waiting on the call to finish waited until its own timeout.
+  nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
+    Task { @MainActor in
+      guard self.state != .disconnected else { return }
+      if let error {
+        self.state = .failed(error.localizedDescription)
+      } else {
+        self.state = .disconnected
+      }
+      self.agentStatus = .none
+    }
   }
 }
 

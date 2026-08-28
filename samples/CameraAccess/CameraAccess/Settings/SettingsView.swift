@@ -215,14 +215,17 @@ struct SettingsView: View {
     }
   }
 
-  /// Ask the gateway for something that needs a valid token. /apps is the
-  /// cheapest such route, and distinguishing 401 from a transport failure is
-  /// the whole point -- they need opposite fixes.
+  /// Ask the gateway for something that needs a valid token, and distinguish a
+  /// rejected token from an unreachable server -- they need opposite fixes.
+  ///
+  /// /health rather than upstream's /apps: Corvus points this at its own token
+  /// server, which has no /apps, so a working setup reported "Server error 404"
+  /// beside interviews that were running fine. Both servers answer /health.
   private func refreshGatewayStatus() async {
     
     gatewayStatus = .checking
     guard GeminiConfig.isAgentConfigured,
-          let url = URL(string: "\(GeminiConfig.agentBaseURL)/apps") else {
+          let url = URL(string: "\(GeminiConfig.agentBaseURL)/health") else {
       gatewayStatus = .notConfigured
       return
     }
