@@ -18,6 +18,10 @@ struct Study: Codable, Identifiable, Equatable {
   var triggerPolicy: TriggerPolicy?
   /// Where this study happens. Omitted means a grocery store.
   var scene: StudyScene?
+  /// What the researcher is trying to learn, in plain prose. Unlike `notes`
+  /// this IS sent to the model -- it is what a conversational interviewer steers
+  /// by, and the difference between a probing follow-up and a generic one.
+  var researchGoal: String?
 
   var policy: TriggerPolicy { triggerPolicy ?? .default }
   var setting: StudyScene { scene ?? .groceryStore }

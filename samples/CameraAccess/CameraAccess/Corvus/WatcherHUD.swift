@@ -16,7 +16,9 @@ struct WatcherHUD: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      if let trigger = watcher.triggers.first {
+      if watcher.isInterviewing {
+        interviewingBanner
+      } else if let trigger = watcher.triggers.first {
         triggerBanner(trigger)
       }
       status
@@ -25,6 +27,21 @@ struct WatcherHUD: View {
     .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
     .foregroundStyle(.white)
     .font(.system(size: 12, weight: .regular, design: .monospaced))
+  }
+
+  /// Stage 2 has the floor. Distinct from the trigger banner because during a
+  /// field test the two failure modes look identical from outside the glasses:
+  /// a trigger that never started an interview, and an interview that started
+  /// but is silent.
+  private var interviewingBanner: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "waveform")
+      Text("INTERVIEWING")
+        .font(.system(size: 13, weight: .bold, design: .monospaced))
+    }
+    .padding(8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(.blue.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
   }
 
   /// The moment Stage 2 would speak. Shows the question that would be asked,

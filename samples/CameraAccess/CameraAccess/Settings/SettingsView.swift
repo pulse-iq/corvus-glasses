@@ -52,6 +52,10 @@ struct SettingsView: View {
   @AppStorage(SettingsManager.showCaptionsKey) private var showCaptions = true
   @AppStorage("corvus.watchOnCameraScreen") private var watchOnCameraScreen = true
   @AppStorage("corvus.showWatcherHUD") private var showWatcherHUD = true
+  @AppStorage("corvus.interviewsEnabled") private var interviewsEnabled = true
+  @AppStorage("corvus.transcribeAnswers") private var transcribeAnswers = true
+  @AppStorage("corvus.audioRouteMode") private var audioRouteRaw = AudioRouteMode.glassesBothWays.rawValue
+  @AppStorage("corvus.interviewer") private var interviewerRaw = InterviewerKind.conversational.rawValue
 
   var body: some View {
     NavigationView {
@@ -66,8 +70,38 @@ struct SettingsView: View {
           NavigationLink("Watcher bench") {
             CorvusWatcherView()
           }
+          NavigationLink("Audio route probe") {
+            AudioRouteProbeView()
+          }
           Toggle("Watch the camera screen", isOn: $watchOnCameraScreen)
           Toggle("Show detection overlay", isOn: $showWatcherHUD)
+        }
+
+        // Stage 2. Off leaves Stage 1 exactly as it was -- trigger, banner,
+        // log, silence -- which is the right setting while tuning detection.
+        Section(header: Text("Interviews"), footer: Text(
+          interviewerRaw == InterviewerKind.conversational.rawValue
+            ? "The study's opening question is always asked word for word. After "
+              + "that a model hears the answer and picks the follow-up, or stops. "
+              + "Expect about two seconds of silence between turns."
+            : audioRouteRaw == AudioRouteMode.glassesBothWays.rawValue
+            ? "Glasses speaker and glasses microphone. The route drops to call "
+              + "quality, but the mic is on the wearer rather than in a pocket — "
+              + "worth far more once there is background noise."
+            : "Glasses speaker at full quality, answer recorded on the phone. "
+              + "Cleaner audio, but the phone hears the room rather than the wearer.")) {
+          Toggle("Ask the question out loud", isOn: $interviewsEnabled)
+          Picker("Style", selection: $interviewerRaw) {
+            ForEach(InterviewerKind.allCases) { kind in
+              Text(kind.label).tag(kind.rawValue)
+            }
+          }
+          Picker("Audio route", selection: $audioRouteRaw) {
+            ForEach(AudioRouteMode.allCases, id: \.rawValue) { mode in
+              Text(mode.label).tag(mode.rawValue)
+            }
+          }
+          Toggle("Transcribe answers", isOn: $transcribeAnswers)
         }
 
         Section(header: Text("Camera"), footer: Text(captureSourceRaw == CaptureSource.glasses.rawValue

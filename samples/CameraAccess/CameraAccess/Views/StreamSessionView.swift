@@ -133,6 +133,9 @@ struct StreamSessionView: View {
       // Stage 1 rides the same feed. Its own sampler throttles to ~1fps, so
       // handing it every frame costs a closure call.
       viewModel.onAnalysisFrame = { [weak watcher] image in
+        // Heartbeat first: the audio probe needs proof DAT is still delivering
+        // even when the watcher is stopped or another screen is up.
+        FrameHeartbeat.shared.tick()
         watcher?.submit(image: image)
       }
       if watchHere { watcher.start() }

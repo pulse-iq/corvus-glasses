@@ -21,10 +21,16 @@ final class WatcherCoordinator: ObservableObject {
   @Published private(set) var framesSampled = 0
   @Published private(set) var triggers: [Trigger] = []
 
-  /// Stage 2's entry point. Left unset for now: until the interviewer exists,
-  /// a trigger is logged and shown, and the machine is released immediately so
-  /// testing can continue past the first pickup.
+  /// Observers of a trigger, for UI. Does not conduct the interview.
   var onTrigger: ((Trigger) -> Void)?
+
+  /// Stage 2. Nil, or interviews disabled, keeps the old behaviour: a trigger
+  /// is logged and shown and the lock released immediately, so detection can be
+  /// tuned without the glasses talking to anyone.
+  var interviewer: Interviewer?
+
+  @Published private(set) var isInterviewing = false
+  @Published private(set) var interviews: [InterviewRecord] = []
 
   /// The configured fieldwork this run belongs to. Items, questions and
   /// thresholds all come from here rather than from code.
@@ -41,6 +47,13 @@ final class WatcherCoordinator: ObservableObject {
     self.study = study
     self.detector = CorvusConfig.activeDetector.make()
     self.machine = TriggerStateMachine(watchlist: study.items, policy: study.policy)
+    self.interviewer = CorvusConfig.interviewer.make()
+  }
+
+  func use(_ kind: InterviewerKind) {
+    interviewer?.cancel()
+    interviewer = kind.make()
+    CorvusConfig.interviewer = kind
   }
 
   /// Switch studies. Rebuilds the machine rather than mutating it: cooldowns
@@ -76,6 +89,12 @@ final class WatcherCoordinator: ObservableObject {
 
   func stop() {
     isRunning = false
+    // Leaving the glasses talking to someone who has taken them off, or into a
+    // study that no longer applies, is worse than losing the answer.
+    if isInterviewing {
+      interviewer?.cancel()
+      isInterviewing = false
+    }
     log.append(.init(kind: "watcher_stopped", at: Date()))
   }
 
@@ -170,11 +189,27 @@ final class WatcherCoordinator: ObservableObject {
       NSLog("[Corvus] TRIGGER %@ (confidence %.2f, %d hits)",
             trigger.item.id, trigger.confidence, trigger.hitCount)
 
-      if let onTrigger {
-        onTrigger(trigger)
+      onTrigger?(trigger)
+
+      if let interviewer, CorvusConfig.interviewsEnabled {
+        // The machine stays locked for the whole interview -- that is what
+        // stops a second pickup mid-question -- and is released on the way out
+        // whatever happened, including a thrown route failure.
+        isInterviewing = true
+        let study = self.study
+        // The frame that fired the trigger, so the interviewer can be concrete
+        // about the actual product rather than the category.
+        let frame = CorvusConfig.sendTriggerFrameToBrain ? jpeg : nil
+        Task { [weak self] in
+          let record = await interviewer.conduct(trigger, study: study, frame: frame)
+          guard let self else { return }
+          self.interviews.insert(record, at: 0)
+          self.isInterviewing = false
+          self.machine.endInterview(at: Date())
+        }
       } else {
-        // No Stage 2 yet. Release the lock straight away so a test run can
-        // reach more than one pickup; the per-item cooldown still applies.
+        // No Stage 2. Release the lock straight away so a test run can reach
+        // more than one pickup; the per-item cooldown still applies.
         machine.endInterview(at: now)
       }
     }
