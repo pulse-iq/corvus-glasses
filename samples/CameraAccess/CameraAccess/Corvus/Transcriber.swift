@@ -2,7 +2,7 @@ import Foundation
 
 /// Turns a recorded answer into text.
 ///
-/// Deliberately not on the interview's critical path. Transcription happens
+/// Deliberately not on the intercept's critical path. Transcription happens
 /// after the wearer has walked away, so the round trip costs nothing the
 /// participant experiences -- which is why a network transcriber is affordable
 /// here when it would not be inside a live conversation. The audio is always

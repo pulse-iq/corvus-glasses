@@ -3,12 +3,13 @@ import CoreVideo
 import Foundation
 import UIKit
 
-/// Stage 1, assembled: frames in, interview triggers out.
+/// The watcher, assembled: frames in, intercept triggers out.
 ///
-/// Everything upstream of this is a camera and everything downstream is Stage 2,
-/// so this is the only place that knows the whole pipeline. It is deliberately
-/// source-agnostic -- glasses frames and iPhone frames arrive through the same
-/// two entry points, which is what lets the watcher be tuned on a desk.
+/// Everything upstream of this is a camera and everything downstream is an
+/// intercept, so this is the only place that knows the whole pipeline. It is
+/// deliberately source-agnostic -- glasses frames and iPhone frames arrive
+/// through the same two entry points, which is what lets the watcher be tuned
+/// on a desk.
 @MainActor
 final class WatcherCoordinator: ObservableObject {
   @Published private(set) var isRunning = false
@@ -21,16 +22,16 @@ final class WatcherCoordinator: ObservableObject {
   @Published private(set) var framesSampled = 0
   @Published private(set) var triggers: [Trigger] = []
 
-  /// Observers of a trigger, for UI. Does not conduct the interview.
+  /// Observers of a trigger, for UI. Does not conduct the intercept.
   var onTrigger: ((Trigger) -> Void)?
 
-  /// Stage 2. Nil, or interviews disabled, keeps the old behaviour: a trigger
+  /// The interceptor. Nil, or disabled, keeps the old behaviour: a trigger
   /// is logged and shown and the lock released immediately, so detection can be
   /// tuned without the glasses talking to anyone.
-  var interviewer: Interviewer?
+  var interceptor: Interceptor?
 
-  @Published private(set) var isInterviewing = false
-  @Published private(set) var interviews: [InterviewRecord] = []
+  @Published private(set) var isIntercepting = false
+  @Published private(set) var intercepts: [InterceptRecord] = []
 
   /// The configured fieldwork this run belongs to. Items, questions and
   /// thresholds all come from here rather than from code.
@@ -47,25 +48,25 @@ final class WatcherCoordinator: ObservableObject {
     self.study = study
     self.detector = CorvusConfig.activeDetector.make()
     self.machine = TriggerStateMachine(watchlist: study.items, policy: study.policy)
-    self.interviewer = CorvusConfig.interviewer.make()
+    self.interceptor = CorvusConfig.interceptor.make()
   }
 
-  /// The realtime interviewer talks through the call screen's own room, so it
+  /// The realtime interceptor talks through the call screen's own room, so it
   /// needs the session that screen owns. Passed in rather than reached for
   /// globally, because a second LiveKit room would fight this one for the mic.
   private weak var liveKit: LiveKitSession?
 
   func attach(liveKit: LiveKitSession) {
     self.liveKit = liveKit
-    if CorvusConfig.interviewer == .liveKit {
-      interviewer = InterviewerKind.liveKit.make(liveKit: liveKit)
+    if CorvusConfig.interceptor == .liveKit {
+      interceptor = InterceptorKind.liveKit.make(liveKit: liveKit)
     }
   }
 
-  func use(_ kind: InterviewerKind) {
-    interviewer?.cancel()
-    interviewer = kind.make(liveKit: liveKit)
-    CorvusConfig.interviewer = kind
+  func use(_ kind: InterceptorKind) {
+    interceptor?.cancel()
+    interceptor = kind.make(liveKit: liveKit)
+    CorvusConfig.interceptor = kind
   }
 
   /// Switch studies. Rebuilds the machine rather than mutating it: cooldowns
@@ -103,17 +104,17 @@ final class WatcherCoordinator: ObservableObject {
     isRunning = false
     // Leaving the glasses talking to someone who has taken them off, or into a
     // study that no longer applies, is worse than losing the answer.
-    if isInterviewing {
-      interviewer?.cancel()
-      isInterviewing = false
+    if isIntercepting {
+      interceptor?.cancel()
+      isIntercepting = false
     }
     log.append(.init(kind: "watcher_stopped", at: Date()))
   }
 
-  /// Stage 2 calls this when an interview finishes, which starts the global
-  /// cooldown. Until Stage 2 exists, `handle(trigger:)` calls it immediately.
-  func interviewEnded() {
-    machine.endInterview(at: Date())
+  /// The interceptor calls this when an intercept finishes, which starts the
+  /// global cooldown. With no interceptor, `handle(trigger:)` calls it at once.
+  func interceptEnded() {
+    machine.endIntercept(at: Date())
   }
 
   // MARK: - Frame intake
@@ -203,26 +204,26 @@ final class WatcherCoordinator: ObservableObject {
 
       onTrigger?(trigger)
 
-      if let interviewer, CorvusConfig.interviewsEnabled {
-        // The machine stays locked for the whole interview -- that is what
+      if let interceptor, CorvusConfig.interceptsEnabled {
+        // The machine stays locked for the whole intercept -- that is what
         // stops a second pickup mid-question -- and is released on the way out
         // whatever happened, including a thrown route failure.
-        isInterviewing = true
+        isIntercepting = true
         let study = self.study
-        // The frame that fired the trigger, so the interviewer can be concrete
+        // The frame that fired the trigger, so the interceptor can be concrete
         // about the actual product rather than the category.
         let frame = CorvusConfig.sendTriggerFrameToBrain ? jpeg : nil
         Task { [weak self] in
-          let record = await interviewer.conduct(trigger, study: study, frame: frame)
+          let record = await interceptor.conduct(trigger, study: study, frame: frame)
           guard let self else { return }
-          self.interviews.insert(record, at: 0)
-          self.isInterviewing = false
-          self.machine.endInterview(at: Date())
+          self.intercepts.insert(record, at: 0)
+          self.isIntercepting = false
+          self.machine.endIntercept(at: Date())
         }
       } else {
-        // No Stage 2. Release the lock straight away so a test run can reach
+        // No interceptor. Release the lock straight away so a test run can reach
         // more than one pickup; the per-item cooldown still applies.
-        machine.endInterview(at: now)
+        machine.endIntercept(at: now)
       }
     }
   }

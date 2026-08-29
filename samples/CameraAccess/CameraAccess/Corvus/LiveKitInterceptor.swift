@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stage 2 over a realtime model, through the LiveKit room upstream already
+/// An intercept over a realtime model, through the LiveKit room upstream already
 /// builds and the worker in `agent/` already runs.
 ///
 /// The reason this is a thin class rather than the large one it looks like it
@@ -9,16 +9,16 @@ import Foundation
 /// receives live transcription of both sides; the Python worker already opens a
 /// Gemini Live session. What was missing was only that a call began when the
 /// app launched rather than when someone picked up a bottle, and that nobody
-/// told the model it was conducting an interview.
+/// told the model it was conducting an intercept.
 ///
-/// What this buys over `ConversationalInterviewer` is the four seconds between
+/// What this buys over `ConversationalInterceptor` is the four seconds between
 /// someone finishing a sentence and hearing the next question. The model is
 /// listening while they speak, so there is nothing to upload and nothing to
 /// wait for. What it costs is a running worker and a room -- and the ability to
 /// know, deterministically, what will be said, since the model now holds the
 /// floor for the whole conversation rather than one question at a time.
 @MainActor
-final class LiveKitInterviewer: Interviewer {
+final class LiveKitInterceptor: Interceptor {
   let name = "LiveKit realtime"
 
   private weak var session: LiveKitSession?
@@ -36,7 +36,7 @@ final class LiveKitInterviewer: Interviewer {
   }
 
   /// Needs a live session object and a gateway to mint room tokens. Both are
-  /// external, so this is the one interviewer that can be selected and still
+  /// external, so this is the one interceptor that can be selected and still
   /// be unable to run.
   var isConfigured: Bool { session != nil && GeminiConfig.isAgentConfigured }
 
@@ -44,16 +44,16 @@ final class LiveKitInterviewer: Interviewer {
     cancelled = true
   }
 
-  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterviewRecord {
+  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterceptRecord {
     cancelled = false
 
-    var record = InterviewRecord(
+    var record = InterceptRecord(
       studyID: study.id,
       itemID: trigger.item.id,
       itemName: trigger.item.displayName,
       triggeredAt: trigger.firedAt,
       confidence: trigger.confidence)
-    record.interviewer = name
+    record.interceptor = name
     record.brain = "realtime worker"
 
     guard let session else {
@@ -65,15 +65,15 @@ final class LiveKitInterviewer: Interviewer {
       return finish(record)
     }
 
-    // Everything the worker needs for this one interview. It reads participant
+    // Everything the worker needs for this one intercept. It reads participant
     // metadata already; these are extra keys in the same place.
     session.pendingSessionContext = [
-      "mode": "interview",
+      "mode": "intercept",
       "studyId": study.id,
       "itemId": trigger.item.id,
       "itemName": trigger.item.displayName,
       "openingQuestion": trigger.item.question,
-      "instructions": InterviewPrompt.realtime(study: study, item: trigger.item),
+      "instructions": InterceptPrompt.realtime(study: study, item: trigger.item),
     ]
     defer { session.pendingSessionContext = nil }
 
@@ -114,13 +114,13 @@ final class LiveKitInterviewer: Interviewer {
     var abort: String?
   }
 
-  /// The worker ends an interview by leaving the room, so a departed agent is
+  /// The worker ends an intercept by leaving the room, so a departed agent is
   /// the normal finish. The ceilings exist because every other way this ends is
   /// a failure that would otherwise hold the watcher's lock open.
   private func waitForCompletion(_ session: LiveKitSession) async -> Outcome {
     let started = Date()
     let joinDeadline = CorvusConfig.agentJoinTimeoutSeconds
-    let ceiling = CorvusConfig.maxRealtimeInterviewSeconds
+    let ceiling = CorvusConfig.maxRealtimeInterceptSeconds
     var everJoined = false
 
     while true {
@@ -132,14 +132,14 @@ final class LiveKitInterviewer: Interviewer {
       case .left:
         // Only meaningful after it actually arrived; `left` is also the state
         // before anything has ever joined.
-        if everJoined { return Outcome(reason: "worker ended the interview") }
+        if everJoined { return Outcome(reason: "worker ended the intercept") }
       case .waiting, .none:
         break
       }
 
-      // The worker ends an interview by deleting the room, which reaches the
+      // The worker ends an intercept by deleting the room, which reaches the
       // phone as a disconnect carrying "Room deleted". Once it has joined,
-      // any close is the interview finishing; only a failure before it ever
+      // any close is the intercept finishing; only a failure before it ever
       // arrived is an abort worth recording as one.
       if case .failed(let why) = session.state {
         return everJoined ? Outcome(reason: "room closed (\(why))") : Outcome(abort: why)
@@ -180,26 +180,26 @@ final class LiveKitInterviewer: Interviewer {
     NSLog("[Corvus] agent transcript: %d item(s)", decoded.turns.count)
   }
 
-  /// Pair each thing the interviewer said with the answer that followed it.
-  private func turns() -> [InterviewTurn] {
-    var out: [InterviewTurn] = []
+  /// Pair each thing the interceptor said with the answer that followed it.
+  private func turns() -> [InterceptTurn] {
+    var out: [InterceptTurn] = []
     var pending: String?
     // Whole and in order already; nothing to clean or re-sequence.
     for segment in agentTranscript ?? [] {
       if segment.isAgent {
         if let question = pending {
-          out.append(InterviewTurn(question: question, askedAt: Date()))
+          out.append(InterceptTurn(question: question, askedAt: Date()))
         }
         pending = segment.text
       } else if let question = pending {
-        var turn = InterviewTurn(question: question, askedAt: Date())
+        var turn = InterceptTurn(question: question, askedAt: Date())
         turn.transcript = segment.text
         out.append(turn)
         pending = nil
       }
     }
     if let question = pending {
-      out.append(InterviewTurn(question: question, askedAt: Date()))
+      out.append(InterceptTurn(question: question, askedAt: Date()))
     }
     return out
   }
@@ -207,12 +207,12 @@ final class LiveKitInterviewer: Interviewer {
   // MARK: - Persistence
 
   @discardableResult
-  private func finish(_ record: InterviewRecord) -> InterviewRecord {
+  private func finish(_ record: InterceptRecord) -> InterceptRecord {
     var record = record
     record.endedAt = Date()
     record.questionsAsked = record.turns.filter { !$0.question.isEmpty }.count
 
-    let directory = log.sessionDirectory.appendingPathComponent("interviews", isDirectory: true)
+    let directory = log.sessionDirectory.appendingPathComponent("intercepts", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
@@ -223,13 +223,13 @@ final class LiveKitInterviewer: Interviewer {
     }
 
     log.append(.init(
-      kind: "interview",
+      kind: "intercept",
       at: record.endedAt ?? Date(),
       itemID: record.itemID,
       confidence: record.confidence,
       error: record.abortReason,
       note: "realtime turns=\(record.turns.count) ended=\(record.endedBecause ?? "?")"))
-    NSLog("[Corvus] realtime interview %@: %d turn(s)%@",
+    NSLog("[Corvus] realtime intercept %@: %d turn(s)%@",
           record.itemID, record.turns.count,
           record.abortReason.map { " aborted: \($0)" } ?? "")
     return record

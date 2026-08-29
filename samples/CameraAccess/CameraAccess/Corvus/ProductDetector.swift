@@ -42,7 +42,7 @@ enum DetectorError: Error, LocalizedError {
   }
 }
 
-/// A swappable Stage 1 vision backend. One JPEG in, one structured verdict out.
+/// A swappable vision backend for the watcher. One JPEG in, one verdict out.
 /// Everything behind this protocol is a single HTTP call, which is what makes
 /// cross-model benchmarking cheap.
 protocol ProductDetector: Sendable {

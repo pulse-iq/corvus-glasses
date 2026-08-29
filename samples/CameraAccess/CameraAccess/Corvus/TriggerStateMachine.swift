@@ -1,10 +1,10 @@
 import Foundation
 
-/// Tuning for how eagerly Stage 1 interrupts a shopper.
+/// Tuning for how eagerly the watcher interrupts a shopper.
 ///
-/// Every value here trades a missed interview against a bad one. Defaults lean
+/// Every value here trades a missed intercept against a bad one. Defaults lean
 /// conservative: a missed pickup costs one data point, while a spurious
-/// interview costs the participant's trust and contaminates the session.
+/// intercept costs the participant's trust and contaminates the session.
 struct TriggerPolicy: Equatable {
   /// Below this, a hit does not count towards the streak at all.
   var minConfidence: Double = 0.6
@@ -25,17 +25,17 @@ struct TriggerPolicy: Equatable {
   /// How long before the same product may trigger again. Long, because the item
   /// stays in the cart and keeps appearing in frame.
   var perItemCooldown: TimeInterval = 600
-  /// Quiet period after an interview ends, so two pickups in a row do not
-  /// become two back-to-back interviews.
+  /// Quiet period after an intercept ends, so two pickups in a row do not
+  /// become two back-to-back intercepts.
   var globalCooldown: TimeInterval = 90
-  /// Safety valve: if Stage 2 never reports back (crash, dropped session), the
+  /// Safety valve: if an intercept never reports back (crash, dropped session), the
   /// watcher un-sticks itself instead of going silent for the rest of the trip.
-  var maxInterviewDuration: TimeInterval = 120
+  var maxInterceptDuration: TimeInterval = 120
 
   static let `default` = TriggerPolicy()
 }
 
-/// A decision to interview, with the evidence that produced it.
+/// A decision to intercept, with the evidence that produced it.
 struct Trigger: Equatable {
   let item: WatchItem
   let firedAt: Date
@@ -56,7 +56,7 @@ enum TriggerDecision: Equatable {
   case globallyLocked(until: Date?)
 }
 
-/// Turns a stream of per-frame verdicts into interview triggers.
+/// Turns a stream of per-frame verdicts into intercept triggers.
 ///
 /// Pure and clock-injected: every decision is a function of the detections it
 /// has been shown and the timestamps it was given, so the whole policy is
@@ -73,10 +73,10 @@ final class TriggerStateMachine {
 
   private var streak: [Hit] = []
   private var lastTriggeredByItem: [String: Date] = [:]
-  /// Set while an interview is in flight or its cooldown is running. nil means
+  /// Set while an intercept is in flight or its cooldown is running. nil means
   /// the watcher is free to fire.
   private var lockedUntil: Date?
-  private var interviewStartedAt: Date?
+  private var interceptStartedAt: Date?
 
   init(watchlist: [WatchItem], policy: TriggerPolicy = .default) {
     self.watchlist = watchlist
@@ -85,20 +85,20 @@ final class TriggerStateMachine {
 
   /// Feed one detection. Returns what the machine decided and why.
   func observe(_ detection: Detection, at now: Date) -> TriggerDecision {
-    // An interview that overran its safety ceiling releases the lock outright;
-    // otherwise a dropped Stage 2 session would silence the rest of the trip.
-    // Deliberately not endInterview(): that would stack a fresh global cooldown
+    // An intercept that overran its safety ceiling releases the lock outright;
+    // otherwise a dropped intercept session would silence the rest of the trip.
+    // Deliberately not endIntercept(): that would stack a fresh global cooldown
     // on top of the timeout just served, and the watcher has already been quiet
-    // for maxInterviewDuration. The per-item cooldown still guards the product
-    // whose interview was lost.
-    if let started = interviewStartedAt, now.timeIntervalSince(started) > policy.maxInterviewDuration {
-      interviewStartedAt = nil
+    // for maxInterceptDuration. The per-item cooldown still guards the product
+    // whose intercept was lost.
+    if let started = interceptStartedAt, now.timeIntervalSince(started) > policy.maxInterceptDuration {
+      interceptStartedAt = nil
       lockedUntil = nil
     }
 
     if let until = lockedUntil {
-      if interviewStartedAt != nil || now < until {
-        return .globallyLocked(until: interviewStartedAt == nil ? until : nil)
+      if interceptStartedAt != nil || now < until {
+        return .globallyLocked(until: interceptStartedAt == nil ? until : nil)
       }
       lockedUntil = nil
     }
@@ -148,15 +148,15 @@ final class TriggerStateMachine {
     lastTriggeredByItem[itemID] = now
     streak.removeAll()
     // Hold the lock open-ended: the global cooldown should run from when the
-    // interview *ends*, not when it starts, or a 45s interview eats most of it.
-    interviewStartedAt = now
-    lockedUntil = now.addingTimeInterval(policy.maxInterviewDuration)
+    // intercept *ends*, not when it starts, or a 45s intercept eats most of it.
+    interceptStartedAt = now
+    lockedUntil = now.addingTimeInterval(policy.maxInterceptDuration)
     return .fired(trigger)
   }
 
-  /// Stage 2 reports back here. Starts the global cooldown.
-  func endInterview(at now: Date) {
-    interviewStartedAt = nil
+  /// The interceptor reports back here. Starts the global cooldown.
+  func endIntercept(at now: Date) {
+    interceptStartedAt = nil
     lockedUntil = now.addingTimeInterval(policy.globalCooldown)
   }
 
@@ -169,6 +169,6 @@ final class TriggerStateMachine {
     streak.removeAll()
     lastTriggeredByItem.removeAll()
     lockedUntil = nil
-    interviewStartedAt = nil
+    interceptStartedAt = nil
   }
 }

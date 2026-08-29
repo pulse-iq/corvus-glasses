@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Stage 1, made visible on the live camera screen.
+/// The watcher, made visible on the live camera screen.
 ///
 /// The bench screen drives the phone camera; this is the same readout over the
-/// glasses feed, where it matters most. Without it Stage 1 is invisible on the
+/// glasses feed, where it matters most. Without it the watcher is invisible on the
 /// glasses -- detections land in a log file on the device, and the only way to
 /// know whether a pickup registered is to pull the logs afterwards, by which
 /// point the trip is over.
@@ -16,8 +16,8 @@ struct WatcherHUD: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      if watcher.isInterviewing {
-        interviewingBanner
+      if watcher.isIntercepting {
+        interceptingBanner
       } else if let trigger = watcher.triggers.first {
         triggerBanner(trigger)
       }
@@ -29,14 +29,14 @@ struct WatcherHUD: View {
     .font(.system(size: 12, weight: .regular, design: .monospaced))
   }
 
-  /// Stage 2 has the floor. Distinct from the trigger banner because during a
+  /// An intercept has the floor. Distinct from the trigger banner because during a
   /// field test the two failure modes look identical from outside the glasses:
-  /// a trigger that never started an interview, and an interview that started
+  /// a trigger that never started an intercept, and an intercept that started
   /// but is silent.
-  private var interviewingBanner: some View {
+  private var interceptingBanner: some View {
     HStack(spacing: 6) {
       Image(systemName: "waveform")
-      Text("INTERVIEWING")
+      Text("INTERCEPTING")
         .font(.system(size: 13, weight: .bold, design: .monospaced))
     }
     .padding(8)
@@ -44,7 +44,7 @@ struct WatcherHUD: View {
     .background(.blue.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
   }
 
-  /// The moment Stage 2 would speak. Shows the question that would be asked,
+  /// The moment an intercept would speak. Shows the question that would be asked,
   /// because "did it fire at the right instant" and "would it have asked the
   /// right thing" are the two questions a field test has to answer.
   private func triggerBanner(_ trigger: Trigger) -> some View {

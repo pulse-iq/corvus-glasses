@@ -1,9 +1,9 @@
 import AVFoundation
 import Foundation
 
-/// Stage 2 with a model in the loop.
+/// An intercept with a model in the loop.
 ///
-/// Same half-duplex mechanics as `ScriptedInterviewer` -- speak, listen, speak --
+/// Same half-duplex mechanics as `ScriptedInterceptor` -- speak, listen, speak --
 /// but every question after the opener is chosen by a model that has heard the
 /// answers. The opener stays fixed on purpose: it is the study's own wording,
 /// asked identically to every participant, which is what makes their answers
@@ -12,16 +12,16 @@ import Foundation
 ///
 /// The cost of half duplex is unchanged and still real: roughly two seconds of
 /// silence between someone finishing and the next question arriving, and no way
-/// to interrupt. A realtime `Interviewer` fixes both; the interviewing
-/// judgement it would need already lives in `InterviewPrompt` and moves across
+/// to interrupt. A realtime `Interceptor` fixes both; the intercepting
+/// judgement it would need already lives in `InterceptPrompt` and moves across
 /// untouched.
 @MainActor
-final class ConversationalInterviewer: Interviewer {
+final class ConversationalInterceptor: Interceptor {
   let name = "Conversational"
 
   private let speaker = SpeechPlayer()
   private let recorder = AnswerRecorder()
-  private let brain: InterviewBrain = GeminiInterviewBrain()
+  private let brain: InterceptBrain = GeminiInterceptBrain()
   private let log = CorvusLog.shared
   private var cancelled = false
 
@@ -33,15 +33,15 @@ final class ConversationalInterviewer: Interviewer {
     recorder.cancel()
   }
 
-  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterviewRecord {
+  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterceptRecord {
     cancelled = false
-    var record = InterviewRecord(
+    var record = InterceptRecord(
       studyID: study.id,
       itemID: trigger.item.id,
       itemName: trigger.item.displayName,
       triggeredAt: trigger.firedAt,
       confidence: trigger.confidence)
-    record.interviewer = name
+    record.interceptor = name
     record.brain = brain.name
 
     do {
@@ -62,12 +62,12 @@ final class ConversationalInterviewer: Interviewer {
 
     var history: [BrainTurn] = []
     var question = trigger.item.question
-    let maxTurns = max(1, CorvusConfig.maxInterviewTurns)
+    let maxTurns = max(1, CorvusConfig.maxInterceptTurns)
     let maxReasks = max(0, CorvusConfig.maxReasks)
 
     // Substantive questions asked, starting with the study's opener. Re-asks
     // are tracked apart: someone who did not catch the question has not spent a
-    // turn of their interview, and charging them one is how you end up with a
+    // turn of their intercept, and charging them one is how you end up with a
     // single-question transcript that says "Looking at what?".
     var asked = 1
     var reasks = 0
@@ -76,7 +76,7 @@ final class ConversationalInterviewer: Interviewer {
     while true {
       if cancelled { record.abortReason = "cancelled"; break }
 
-      var turn = InterviewTurn(question: question, askedAt: Date())
+      var turn = InterceptTurn(question: question, askedAt: Date())
       await speaker.say(question)
       if cancelled {
         turn.endedBecause = "cancelled"
@@ -85,7 +85,7 @@ final class ConversationalInterviewer: Interviewer {
         break
       }
 
-      let filename = "interview-\(record.id)-\(index).wav"
+      let filename = "intercept-\(record.id)-\(index).wav"
       let url = log.sessionDirectory.appendingPathComponent("audio", isDirectory: true)
         .appendingPathComponent(filename)
       try? FileManager.default.createDirectory(
@@ -160,9 +160,9 @@ final class ConversationalInterviewer: Interviewer {
         }
         question = next
       } catch {
-        // A failed turn ends the interview rather than retrying: the wearer is
+        // A failed turn ends the intercept rather than retrying: the wearer is
         // standing there in silence, and a second round trip is a worse
-        // experience than a short interview.
+        // experience than a short intercept.
         turn.transcriptError = error.localizedDescription
         record.turns.append(turn)
         record.abortReason = error.localizedDescription
@@ -181,8 +181,8 @@ final class ConversationalInterviewer: Interviewer {
     return record
   }
 
-  private func persist(_ record: InterviewRecord) {
-    let directory = log.sessionDirectory.appendingPathComponent("interviews", isDirectory: true)
+  private func persist(_ record: InterceptRecord) {
+    let directory = log.sessionDirectory.appendingPathComponent("intercepts", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
@@ -193,7 +193,7 @@ final class ConversationalInterviewer: Interviewer {
     }
 
     log.append(.init(
-      kind: "interview",
+      kind: "intercept",
       at: record.endedAt ?? Date(),
       itemID: record.itemID,
       confidence: record.confidence,

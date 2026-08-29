@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stage 1 detector on Gemini `generateContent`.
+/// Watcher detector on Gemini `generateContent`.
 ///
 /// Deliberately not the Live API: this is one stateless image classification per
 /// frame, so a plain HTTP round trip is cheaper and simpler than holding a
@@ -36,7 +36,7 @@ struct GeminiProductDetector: ProductDetector {
         "responseMimeType": "application/json",
         "maxOutputTokens": 200,
         // Flash-family models think by default; for a yes/no-plus-label call it
-        // buys nothing and costs the latency this whole stage is built around.
+        // buys nothing and costs the latency the watcher is built around.
         "thinkingConfig": ["thinkingBudget": 0],
       ],
     ]

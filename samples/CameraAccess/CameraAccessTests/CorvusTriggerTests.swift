@@ -2,7 +2,7 @@ import XCTest
 
 @testable import CameraAccess
 
-/// The trigger policy is the part of Stage 1 that decides whether a shopper
+/// The trigger policy is the part of the watcher that decides whether a shopper
 /// gets interrupted, so it is the part worth pinning down without a camera.
 /// Every test drives the machine with explicit timestamps.
 final class CorvusTriggerTests: XCTestCase {
@@ -116,7 +116,7 @@ final class CorvusTriggerTests: XCTestCase {
     guard case .fired = m.observe(hit("cereal"), at: t0.addingTimeInterval(1)) else {
       return XCTFail("expected the first trigger")
     }
-    m.endInterview(at: t0.addingTimeInterval(30))
+    m.endIntercept(at: t0.addingTimeInterval(30))
 
     // Well past the global cooldown, well inside the per-item one: the box is
     // in the cart now and keeps appearing in frame.
@@ -128,27 +128,27 @@ final class CorvusTriggerTests: XCTestCase {
     XCTAssertEqual(id, "cereal")
   }
 
-  func testAnInterviewInFlightBlocksEverything() {
+  func testAnInterceptInFlightBlocksEverything() {
     let m = machine()
     _ = m.observe(hit("cereal"), at: t0)
     guard case .fired = m.observe(hit("cereal"), at: t0.addingTimeInterval(1)) else {
       return XCTFail("expected the first trigger")
     }
-    // A different product picked up mid-interview must wait its turn.
+    // A different product picked up mid-intercept must wait its turn.
     _ = m.observe(hit("coffee"), at: t0.addingTimeInterval(2))
     guard case .globallyLocked = m.observe(hit("coffee"), at: t0.addingTimeInterval(3)) else {
-      return XCTFail("expected the machine to be locked during the interview")
+      return XCTFail("expected the machine to be locked during the intercept")
     }
   }
 
-  func testGlobalCooldownRunsFromTheEndOfTheInterview() {
+  func testGlobalCooldownRunsFromTheEndOfTheIntercept() {
     let m = machine()
     _ = m.observe(hit("cereal"), at: t0)
     _ = m.observe(hit("cereal"), at: t0.addingTimeInterval(1))
-    // A 45s interview: the cooldown starts now, not at t0, or a long interview
+    // A 45s intercept: the cooldown starts now, not at t0, or a long intercept
     // would eat most of the quiet period that follows it.
     let ended = t0.addingTimeInterval(45)
-    m.endInterview(at: ended)
+    m.endIntercept(at: ended)
 
     _ = m.observe(hit("coffee"), at: ended.addingTimeInterval(10))
     guard case .globallyLocked = m.observe(hit("coffee"), at: ended.addingTimeInterval(11)) else {
@@ -162,15 +162,15 @@ final class CorvusTriggerTests: XCTestCase {
     }
   }
 
-  func testAnAbandonedInterviewReleasesTheLock() {
+  func testAnAbandonedInterceptReleasesTheLock() {
     let m = machine()
     _ = m.observe(hit("cereal"), at: t0)
     guard case .fired = m.observe(hit("cereal"), at: t0.addingTimeInterval(1)) else {
       return XCTFail("expected the first trigger")
     }
-    // Stage 2 never calls endInterview -- a crash, or a dropped voice session.
+    // The interceptor never reports back -- a crash, or a dropped voice session.
     // The watcher must recover rather than go silent for the rest of the trip.
-    let after = t0.addingTimeInterval(TriggerPolicy.default.maxInterviewDuration + 5)
+    let after = t0.addingTimeInterval(TriggerPolicy.default.maxInterceptDuration + 5)
     _ = m.observe(hit("coffee"), at: after)
     guard case .fired = m.observe(hit("coffee"), at: after.addingTimeInterval(1)) else {
       return XCTFail("expected the safety valve to release the lock")

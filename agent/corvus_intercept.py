@@ -1,11 +1,11 @@
-"""Corvus's intercept interview, kept out of upstream's agent.
+"""Corvus's intercept, kept out of upstream's agent.
 
 `main.py` belongs to VisionClaw and is pulled from `upstream`. Everything
 specific to Corvus lives here so that file keeps a hook rather than a hundred
-lines of interview logic -- the same split the iOS app uses, where Corvus owns a
+lines of intercept logic -- the same split the iOS app uses, where Corvus owns a
 directory and touches upstream files only at seams.
 
-The interview brief arrives in the room token's participant metadata. The
+The intercept brief arrives in the room token's participant metadata. The
 instructions are composed on the phone from the study being run, so this module
 never learns what a study is: it receives finished text and runs a conversation
 against it.
@@ -23,23 +23,23 @@ from typing import Any
 
 from livekit.agents import JobContext, RunContext, function_tool
 
-logger = logging.getLogger("corvus-interview")
+logger = logging.getLogger("corvus-intercept")
 
 # The phone listens for the finished transcript on this topic.
 TRANSCRIPT_TOPIC = "corvus.transcript"
 
-# Silence before the interview gives up. A realtime model has no clock: if the
+# Silence before the intercept gives up. A realtime model has no clock: if the
 # wearer says nothing it waits indefinitely, and glasses left holding an open
-# microphone are worse than a short interview.
+# microphone are worse than a short intercept.
 IDLE_EXIT_SECONDS = float(os.environ.get("CORVUS_IDLE_EXIT_SECONDS", "45"))
-# Absolute ceiling, in case the model never calls end_interview.
-CEILING_SECONDS = float(os.environ.get("CORVUS_INTERVIEW_CEILING_SECONDS", "180"))
+# Absolute ceiling, in case the model never calls end_intercept.
+CEILING_SECONDS = float(os.environ.get("CORVUS_INTERCEPT_CEILING_SECONDS", "180"))
 
 
 def brief_from_metadata(meta: dict[str, Any]) -> dict[str, Any] | None:
-    """The interview brief, or None for an ordinary assistant call."""
+    """The intercept brief, or None for an ordinary assistant call."""
     corvus = meta.get("corvus") or {}
-    if corvus.get("mode") != "interview":
+    if corvus.get("mode") != "intercept":
         return None
     if not corvus.get("instructions"):
         logger.warning("corvus metadata present but carries no instructions; ignoring")
@@ -47,7 +47,7 @@ def brief_from_metadata(meta: dict[str, Any]) -> dict[str, Any] | None:
     return corvus
 
 
-class InterviewSession:
+class InterceptSession:
     """One intercept: its end signal, its only tool, and its lifecycle."""
 
     def __init__(self, brief: dict[str, Any]) -> None:
@@ -67,7 +67,7 @@ class InterviewSession:
     def tools(self) -> list:
         """Exactly one tool, and it is a control, not a capability.
 
-        An interviewer with search, notes or cards is an assistant, and anything
+        An interceptor with search, notes or cards is an assistant, and anything
         it tells a participant changes what they would have said. But it does
         need a way to hang up: the prompt tells it to leave after its closing
         line, and a realtime model has no other means of doing so.
@@ -75,15 +75,15 @@ class InterviewSession:
         over = self.over
 
         @function_tool
-        async def end_interview(ctx: RunContext) -> str:
-            """Call this immediately after your closing line, once the interview is
+        async def end_intercept(ctx: RunContext) -> str:
+            """Call this immediately after your closing line, once the intercept is
             over. It hangs up. Do not call it before you have said your closing
             line, and do not say anything after calling it."""
-            logger.info("end_interview called")
+            logger.info("end_intercept called")
             over.set()
-            return "Interview ended."
+            return "Intercept ended."
 
-        return [end_interview]
+        return [end_intercept]
 
     def observe(self, session: Any) -> None:
         """Record each finished conversation item, in order."""
@@ -119,7 +119,7 @@ class InterviewSession:
             logger.exception("could not publish transcript (%d items)", len(self.transcript))
 
     async def run(self, ctx: JobContext, session: Any, *, user_id: str) -> None:
-        """Open the interview, hold the room until it ends, then tear it down."""
+        """Open the intercept, hold the room until it ends, then tear it down."""
         self.observe(session)
         # The brief carries the study's exact opening question; waiting for the
         # wearer to speak first would leave them wondering if anything happened.
@@ -130,10 +130,10 @@ class InterviewSession:
         silence_task = asyncio.create_task(self._watch_silence(session, user_id))
         try:
             await asyncio.wait_for(self.over.wait(), timeout=CEILING_SECONDS)
-            logger.info("interview finished normally: user=%s", user_id)
+            logger.info("intercept finished normally: user=%s", user_id)
         except asyncio.TimeoutError:
             logger.warning(
-                "interview hit the %.0fs ceiling: user=%s", CEILING_SECONDS, user_id
+                "intercept hit the %.0fs ceiling: user=%s", CEILING_SECONDS, user_id
             )
         finally:
             silence_task.cancel()
@@ -151,7 +151,7 @@ class InterviewSession:
         ctx.shutdown()
 
     async def _watch_silence(self, session: Any, user_id: str) -> None:
-        """End the interview after sustained silence from the wearer.
+        """End the intercept after sustained silence from the wearer.
 
         The clock deliberately survives the agent speaking. Reset it on the
         model's own turns and a re-prompting agent keeps pushing its deadline
@@ -173,7 +173,7 @@ class InterviewSession:
             await asyncio.sleep(1)
             if silent_since and time.monotonic() - silent_since >= IDLE_EXIT_SECONDS:
                 logger.info(
-                    "interview ended on %.0fs of silence: user=%s",
+                    "intercept ended on %.0fs of silence: user=%s",
                     IDLE_EXIT_SECONDS,
                     user_id,
                 )

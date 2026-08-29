@@ -26,7 +26,7 @@ final class FrameHeartbeat: ObservableObject {
   }
 }
 
-/// Answers one question before Stage 2 gets designed: can this app speak
+/// Answers one question the intercepts depend on: can this app speak
 /// through the glasses, and hear through them, while DAT streams video?
 ///
 /// The DAT SDK has no audio API whatsoever -- its entire permission set is
@@ -34,7 +34,7 @@ final class FrameHeartbeat: ObservableObject {
 /// an ordinary Bluetooth headset, completely outside Meta's SDK. That is
 /// plausible but unverified, and the specific risk is that the glasses refuse
 /// the audio channel while their camera is streaming. Getting this wrong means
-/// rewriting Stage 2, so it gets measured rather than assumed.
+/// rewriting every interceptor, so it gets measured rather than assumed.
 ///
 /// The interesting reading is not what you hear -- it is `currentRoute`, which
 /// names the hardware iOS actually chose.
@@ -102,14 +102,14 @@ final class AudioProbe: ObservableObject {
   // MARK: - Configuring
 
   /// Playback-only, high quality. A2DP is stereo and full bandwidth but offers
-  /// no microphone -- this is the ceiling for a speak-only interviewer.
+  /// no microphone -- this is the ceiling for a speak-only interceptor.
   func configureForPlaybackOnly() {
     apply(category: .playback, options: [.allowBluetoothA2DP], label: "playback + A2DP")
   }
 
   /// Two-way. HFP carries a microphone but drags the whole route down to
   /// narrowband -- expect the voice to sound like a phone call. This is what a
-  /// conversational Stage 2 would actually run on.
+  /// conversational intercept would actually run on.
   func configureForTwoWay() {
     apply(
       category: .playAndRecord,
@@ -281,7 +281,7 @@ struct AudioRouteProbeView: View {
       }
 
       Section(header: Text("1 · Output only"), footer: Text(
-        "A2DP: full bandwidth, no microphone. The ceiling for an interviewer "
+        "A2DP: full bandwidth, no microphone. The ceiling for an interceptor "
         + "that only speaks.")) {
         Button("Configure playback + A2DP") { probe.configureForPlaybackOnly() }
         Button("Speak a test phrase") { probe.speak() }
@@ -289,7 +289,7 @@ struct AudioRouteProbeView: View {
 
       Section(header: Text("2 · Two-way"), footer: Text(
         "HFP carries a microphone but narrows the whole route — expect "
-        + "phone-call quality. This is what a conversational Stage 2 runs on.")) {
+        + "phone-call quality. This is what a conversational intercept runs on.")) {
         Button("Configure playAndRecord + HFP") { probe.configureForTwoWay() }
         Button("Speak a test phrase") { probe.speak() }
         Button(probe.isRecording ? "Recording…" : "Record 4s, then play it back") {

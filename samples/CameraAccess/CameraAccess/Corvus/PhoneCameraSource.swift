@@ -4,7 +4,7 @@ import UIKit
 
 /// The iPhone's back camera as a stand-in for the glasses.
 ///
-/// Stage 1 is a vision problem, not a wearables problem: prompt wording,
+/// Detection is a vision problem, not a wearables problem: prompt wording,
 /// confidence thresholds and streak length can all be tuned by pointing a phone
 /// at a kitchen shelf. Owning a small capture session here -- rather than
 /// borrowing the call's camera track -- keeps the watcher testable without a

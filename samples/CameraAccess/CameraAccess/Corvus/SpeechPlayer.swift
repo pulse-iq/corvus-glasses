@@ -31,13 +31,13 @@ final class SpeechPlayer: NSObject {
     let utterance = AVSpeechUtterance(string: text)
     utterance.voice = Self.voice
     // Slightly under default. A question asked at full speed into someone's ear
-    // mid-aisle reads as an alarm rather than an interviewer.
+    // mid-aisle reads as an alarm rather than an interceptor.
     utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
     utterance.postUtteranceDelay = 0.15
 
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
       // A pending continuation here would mean two overlapping questions, which
-      // the interview flow does not do; release it rather than leak the task.
+      // the intercept flow does not do; release it rather than leak the task.
       finish()
       continuation = cont
       synthesizer.speak(utterance)

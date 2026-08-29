@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stage 1 detector on OpenAI chat completions.
+/// Watcher detector on OpenAI chat completions.
 ///
 /// Chat Completions rather than the Responses API: the request shape has been
 /// stable for years, which matters for a backend whose only job is to be a fair

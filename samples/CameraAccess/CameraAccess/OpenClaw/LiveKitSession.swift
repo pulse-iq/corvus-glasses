@@ -93,7 +93,7 @@ final class LiveKitSession: NSObject, ObservableObject {
 
   var isActive: Bool { state == .connected || state == .connecting }
 
-  /// Fields to attach to the next `start()`. Set by `LiveKitInterviewer` before
+  /// Fields to attach to the next `start()`. Set by `LiveKitInterceptor` before
   /// dialling and cleared by it afterwards, so an ordinary call is unaffected.
   var pendingSessionContext: [String: String]?
 
@@ -354,7 +354,7 @@ final class LiveKitSession: NSObject, ObservableObject {
     }
   }
 
-  /// The agent's own transcript of the interview, as JSON, published just
+  /// The agent's own transcript of the intercept, as JSON, published just
   /// before it tears the room down.
   var onTranscript: ((String) -> Void)?
 
@@ -453,7 +453,7 @@ final class LiveKitSession: NSObject, ObservableObject {
     ]
     // Corvus rides along here: the token endpoint copies this into the room
     // token's participant metadata, which the worker already reads. Sending the
-    // interviewer's whole instruction text rather than a study id keeps the
+    // interceptor's whole instruction text rather than a study id keeps the
     // research instrument on the phone, where the study lives, instead of
     // splitting it across a Python worker that would then need its own copy.
     if let context = pendingSessionContext { payload["corvus"] = context }
@@ -495,7 +495,7 @@ extension LiveKitSession: RoomDelegate {
     Task { @MainActor in self.refreshAgentStatus() }
   }
 
-  /// A room can end from the server side -- an interview worker calling
+  /// A room can end from the server side -- an intercept worker calling
   /// DeleteRoom when it is finished, an admin, a cloud failover. Without this
   /// the app kept reporting `connected` for a room that no longer existed, and
   /// anything waiting on the call to finish waited until its own timeout.

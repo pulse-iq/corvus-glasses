@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stage 1 configuration.
+/// Corvus configuration.
 ///
 /// iOS has no process environment to read, so keys resolve in this order:
 ///   1. UserDefaults (set from the debug panel, handy for swapping keys on device)
@@ -39,7 +39,7 @@ enum CorvusConfig {
 
   /// Whether to open upstream's LiveKit voice call alongside the watcher.
   ///
-  /// Off: Stage 2's architecture is undecided, and upstream's call routes
+  /// Off: intercepts bring their own transport, and upstream's call routes
   /// through a hosted gateway we have no account on -- so every launch opened a
   /// room that could only fail, put "Gateway not configured" over the camera,
   /// and held the mic and radio for nothing. Flip it on to exercise the LiveKit
@@ -59,7 +59,7 @@ enum CorvusConfig {
     set { UserDefaults.standard.set(newValue, forKey: "corvus.watchOnCameraScreen") }
   }
 
-  /// Whether to draw the Stage 1 readout over the camera.
+  /// Whether to draw the watcher readout over the camera.
   ///
   /// On for development, because a silent screen cannot distinguish "working
   /// and correctly quiet" from "broken". Turn it off before a participant wears
@@ -89,24 +89,24 @@ enum CorvusConfig {
     set { UserDefaults.standard.set(newValue, forKey: "corvus.captureCorpus") }
   }
 
-  // MARK: - Stage 2
+  // MARK: - Intercepts
 
-  /// Whether a trigger actually starts an interview. Off leaves Stage 1
+  /// Whether a trigger actually starts an intercept. Off leaves the watcher
   /// exactly as it was -- trigger, banner, log, no sound -- which is what you
   /// want while tuning detection thresholds.
-  static var interviewsEnabled: Bool {
-    get { UserDefaults.standard.object(forKey: "corvus.interviewsEnabled") as? Bool ?? true }
-    set { UserDefaults.standard.set(newValue, forKey: "corvus.interviewsEnabled") }
+  static var interceptsEnabled: Bool {
+    get { UserDefaults.standard.object(forKey: "corvus.interceptsEnabled") as? Bool ?? true }
+    set { UserDefaults.standard.set(newValue, forKey: "corvus.interceptsEnabled") }
   }
 
-  static var interviewer: InterviewerKind {
+  static var interceptor: InterceptorKind {
     get {
-      guard let raw = UserDefaults.standard.string(forKey: "corvus.interviewer"),
-            let kind = InterviewerKind(rawValue: raw)
+      guard let raw = UserDefaults.standard.string(forKey: "corvus.interceptor"),
+            let kind = InterceptorKind(rawValue: raw)
       else { return .conversational }
       return kind
     }
-    set { UserDefaults.standard.set(newValue.rawValue, forKey: "corvus.interviewer") }
+    set { UserDefaults.standard.set(newValue.rawValue, forKey: "corvus.interceptor") }
   }
 
   /// Both routes were measured working with DAT streaming; this is a fidelity
@@ -124,7 +124,7 @@ enum CorvusConfig {
 
   /// Substrings that identify the glasses among the audio devices on offer.
   /// Needed because a participant with earbuds connected presents several
-  /// Bluetooth inputs, and picking the wrong one interviews them through the
+  /// Bluetooth inputs, and picking the wrong one intercepts them through the
   /// wrong microphone without ever erroring.
   static var glassesAudioNameHints: [String] {
     if let raw = UserDefaults.standard.string(forKey: "corvus.glassesAudioNameHints"),
@@ -136,26 +136,26 @@ enum CorvusConfig {
     return ["RB Meta", "Ray-Ban", "Ray Ban", "Oakley Meta"]
   }
 
-  // MARK: - Conversational interviewing
+  // MARK: - Conversational intercepts
 
   /// Model that listens to each answer and chooses the next question. Flash
   /// rather than Flash-Lite: this is the one call in the system that needs
   /// judgement rather than classification, and it happens a handful of times per
-  /// interview instead of once a second.
-  static var interviewModel: String {
-    resolve("corvus.model.interview", fallback: "gemini-2.5-flash")
+  /// intercept instead of once a second.
+  static var interceptModel: String {
+    resolve("corvus.model.intercept", fallback: "gemini-2.5-flash")
   }
 
   /// Total questions including the study's opener. Three is one opener plus two
   /// probes -- past that an intercept stops being an intercept.
-  static var maxInterviewTurns: Int {
-    let v = UserDefaults.standard.integer(forKey: "corvus.maxInterviewTurns")
+  static var maxInterceptTurns: Int {
+    let v = UserDefaults.standard.integer(forKey: "corvus.maxInterceptTurns")
     return v > 0 ? v : 3
   }
 
-  /// How many times the interview may repeat itself when the wearer asks it to.
-  /// These do not count against `maxInterviewTurns` -- being asked "what?" is
-  /// not a turn of the interview -- but they are capped, because repeating a
+  /// How many times the intercept may repeat itself when the wearer asks it to.
+  /// These do not count against `maxInterceptTurns` -- being asked "what?" is
+  /// not a turn of the intercept -- but they are capped, because repeating a
   /// third time is its own kind of pushing.
   static var maxReasks: Int {
     let v = UserDefaults.standard.integer(forKey: "corvus.maxReasks")
@@ -164,7 +164,7 @@ enum CorvusConfig {
 
   /// Send the frame that fired the trigger along with the first answer, so the
   /// model can name the actual product rather than the category. Costs one
-  /// image per interview.
+  /// image per intercept.
   static var sendTriggerFrameToBrain: Bool {
     get { UserDefaults.standard.object(forKey: "corvus.sendTriggerFrameToBrain") as? Bool ?? true }
     set { UserDefaults.standard.set(newValue, forKey: "corvus.sendTriggerFrameToBrain") }
@@ -177,11 +177,11 @@ enum CorvusConfig {
     resolveDouble("corvus.agentJoinTimeoutSeconds", fallback: 20)
   }
 
-  /// Hard ceiling on a realtime interview. Higher than the turn-based one
+  /// Hard ceiling on a realtime intercept. Higher than the turn-based one
   /// because the model paces itself, but still bounded -- the watcher's lock is
   /// held for the whole call.
-  static var maxRealtimeInterviewSeconds: Double {
-    resolveDouble("corvus.maxRealtimeInterviewSeconds", fallback: 180)
+  static var maxRealtimeInterceptSeconds: Double {
+    resolveDouble("corvus.maxRealtimeInterceptSeconds", fallback: 180)
   }
 
   // MARK: - Answer capture

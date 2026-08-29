@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-/// How the interview borrows the device's audio while it runs.
+/// How the intercept borrows the device's audio while it runs.
 ///
 /// Measured on Ray-Ban Metas with DAT streaming video: both work, and DAT keeps
 /// delivering frames throughout, so this is a quality trade rather than a
@@ -25,12 +25,12 @@ enum AudioRouteMode: String, CaseIterable, Codable {
   }
 }
 
-/// Takes the audio route for the duration of an interview and gives it back.
+/// Takes the audio route for the duration of an intercept and gives it back.
 ///
 /// The reason this exists rather than a couple of inline `setCategory` calls is
 /// input selection. A participant may well have earbuds connected -- the probe
 /// found `iPhone Microphone`, `AirPods Pro` and `RB Meta` all offered at once --
-/// and "first Bluetooth input" would quietly interview them through the wrong
+/// and "first Bluetooth input" would quietly intercept them through the wrong
 /// device. The glasses are chosen by name, and what actually got selected is
 /// recorded so a bad session can be explained afterwards rather than guessed at.
 @MainActor
@@ -44,7 +44,7 @@ enum GlassesAudioSession {
 
   struct Activation {
     let mode: AudioRouteMode
-    /// What iOS actually chose, for the interview record.
+    /// What iOS actually chose, for the intercept record.
     let inputName: String
     let outputName: String
     /// False when the glasses were asked for and something else answered.

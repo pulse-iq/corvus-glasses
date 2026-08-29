@@ -9,14 +9,14 @@ struct BrainTurn {
 /// What the model decided to do next.
 struct BrainDecision {
   /// Transcript of the answer it was just given. Comes back in the same call
-  /// that chooses the next question, so the interview never waits on a separate
+  /// that chooses the next question, so the intercept never waits on a separate
   /// transcription round trip.
   let transcript: String
-  /// nil ends the interview.
+  /// nil ends the intercept.
   let nextQuestion: String?
   /// The question was not heard or not understood, and this is the same
-  /// question said differently. Does not spend the interview's budget: being
-  /// asked to repeat yourself is not a turn of the interview.
+  /// question said differently. Does not spend the intercept's budget: being
+  /// asked to repeat yourself is not a turn of the intercept.
   let isReask: Bool
   /// Why it chose to continue or stop. Logged, never spoken -- during tuning
   /// "they already answered that" and "they sound impatient" call for different
@@ -28,12 +28,12 @@ struct BrainDecision {
 
 /// Decides what to ask next.
 ///
-/// Separate from `Interviewer` on purpose: the interviewer owns audio, turns
+/// Separate from `Interceptor` on purpose: the interceptor owns audio, turns
 /// and files, this owns judgement. Swapping to a realtime model later replaces
-/// the interviewer and the transport, but the interviewing *behaviour* -- what
+/// the interceptor and the transport, but the questioning *behaviour* -- what
 /// makes a good probe, when to stop -- is this prompt, and it carries over
 /// unchanged. That is the part worth getting right now.
-protocol InterviewBrain: Sendable {
+protocol InterceptBrain: Sendable {
   var name: String { get }
   var isConfigured: Bool { get }
 
@@ -49,13 +49,13 @@ protocol InterviewBrain: Sendable {
   ) async throws -> BrainDecision
 }
 
-/// The interviewing instructions.
+/// The questioning instructions.
 ///
 /// Held in one place, like `DetectionPrompt`, because this is the actual
 /// research instrument -- the difference between a useful intercept and an
 /// annoying one is entirely in this text, and it needs to be reviewable as
 /// prose rather than hunted for inside a request body.
-enum InterviewPrompt {
+enum InterceptPrompt {
   static func system(study: Study, item: WatchItem, turnsRemaining: Int) -> String {
     let scene = study.setting
     let goal = study.researchGoal ?? """
@@ -118,28 +118,28 @@ enum InterviewPrompt {
   }
 }
 
-extension InterviewPrompt {
+extension InterceptPrompt {
   /// The same research instrument, rewritten for a model that holds the floor.
   ///
   /// The turn-based prompt could assume its shape: one request, one question,
   /// silence until the next answer arrived. A realtime model has none of that.
   /// It is a conversational assistant by default -- it will acknowledge, agree,
   /// fill pauses, and cheerfully answer "so which olive oil is better?" -- and
-  /// every one of those behaviours contaminates an interview. A participant who
+  /// every one of those behaviours contaminates an intercept. A participant who
   /// is told "great point" learns what this thing likes hearing; a participant
   /// who gets a recommendation has been sold to, not researched. So most of
   /// this text exists to take away abilities the model otherwise has.
   ///
   /// It is generated on the phone and shipped to the worker in the room token's
   /// metadata rather than living in the Python agent, so the study stays the
-  /// single source of truth for how Corvus interviews.
+  /// single source of truth for how Corvus intercepts.
   static func realtime(study: Study, item: WatchItem) -> String {
     let scene = study.setting
     let goal = study.researchGoal ?? """
       Understand what drove this person's attention and choice at the shelf, in \
       their own words.
       """
-    let budget = max(1, CorvusConfig.maxInterviewTurns)
+    let budget = max(1, CorvusConfig.maxInterceptTurns)
 
     return """
     You are conducting a very short intercept interview, out loud, through the \
@@ -190,7 +190,7 @@ extension InterviewPrompt {
     - If they stay silent for a long stretch, ask once whether they would \
     rather skip it. If they say yes, or stay silent again, finish.
     - To finish: say one short, plain closing line -- no more than six words, no \
-    thanks for their time, no summary -- and then call end_interview. Say \
+    thanks for their time, no summary -- and then call end_intercept. Say \
     nothing after calling it. Not calling it leaves them wearing an open \
     microphone.
     """
@@ -199,12 +199,12 @@ extension InterviewPrompt {
 
 /// `generateContent` with inline audio.
 ///
-/// Not the Live API, for the same reason Stage 1 is not: this is one bounded
+/// Not the Live API, for the same reason the watcher is not: this is one bounded
 /// request per turn, so a socket held open between turns would buy nothing. It
-/// is also what keeps the whole interview loop restartable -- a failed turn is
+/// is also what keeps the whole intercept loop restartable -- a failed turn is
 /// a retry, not a dropped session.
-struct GeminiInterviewBrain: InterviewBrain {
-  var model: String { CorvusConfig.interviewModel }
+struct GeminiInterceptBrain: InterceptBrain {
+  var model: String { CorvusConfig.interceptModel }
   var name: String { "gemini:\(model)" }
   var isConfigured: Bool { !CorvusConfig.geminiAPIKey.isEmpty }
 
@@ -266,7 +266,7 @@ struct GeminiInterviewBrain: InterviewBrain {
 
     let body: [String: Any] = [
       "system_instruction": [
-        "parts": [["text": InterviewPrompt.system(
+        "parts": [["text": InterceptPrompt.system(
           study: study, item: item, turnsRemaining: turnsRemaining)]]
       ],
       "contents": contents,

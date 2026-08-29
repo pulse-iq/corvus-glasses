@@ -45,7 +45,7 @@ from livekit.agents import (
 )
 from livekit.plugins import google, openai
 
-from corvus_interview import InterviewSession, brief_from_metadata
+from corvus_intercept import InterceptSession, brief_from_metadata
 
 logger = logging.getLogger("visionclaw-agent")
 
@@ -704,9 +704,9 @@ async def entrypoint(ctx: JobContext):
     except json.JSONDecodeError:
         meta = {}
     engine = meta.get("engine", "gemini")
-    # Corvus: an interview brief in the same metadata, or None for a normal call.
+    # Corvus: an intercept brief in the same metadata, or None for a normal call.
     corvus_brief = brief_from_metadata(meta)
-    interview = InterviewSession(corvus_brief) if corvus_brief else None
+    intercept = InterceptSession(corvus_brief) if corvus_brief else None
     user_id = participant.identity or "demo"
     logger.info("session start: user=%s engine=%s", user_id, engine)
 
@@ -718,10 +718,10 @@ async def entrypoint(ctx: JobContext):
     # The trace pump POSTs to upstream's gateway, which Corvus does not run --
     # and _gateway_url() subscripts os.environ, so every flush raises KeyError,
     # requeues, and retries every few seconds. It also kept the worker from
-    # exiting, so each interview ended with "process did not exit in time,
+    # exiting, so each intercept ended with "process did not exit in time,
     # killing process". Events still accumulate in the tracer; nothing drains
-    # them, which for a one-interview job is the point.
-    pump = None if interview else asyncio.create_task(tracer.pump())
+    # them, which for a one-intercept job is the point.
+    pump = None if intercept else asyncio.create_task(tracer.pump())
 
     async def _finish_trace() -> None:
         if pump is None:
@@ -832,8 +832,8 @@ async def entrypoint(ctx: JobContext):
 
     await session.start(
         agent=Agent(
-            instructions=interview.instructions if interview else INSTRUCTIONS,
-            tools=interview.tools() if interview
+            instructions=intercept.instructions if intercept else INSTRUCTIONS,
+            tools=intercept.tools() if intercept
             else [execute, quick_search, show_card, save_note, recall_notes, delete_note],
         ),
         room=ctx.room,
@@ -841,17 +841,17 @@ async def entrypoint(ctx: JobContext):
         # without this the model gets no frames and hallucinates a scene when
         # asked what it sees.
         #
-        # Off for interviews: streaming frames into a Live session fills its
+        # Off for intercepts: streaming frames into a Live session fills its
         # context in well under a minute, and the session then dies mid-answer
         # with a 1007 "context exhausted" -- observed in the field as the
-        # interviewer simply going silent. Stage 1 has already identified the
-        # product and the brief names it, so the interviewer gains little from
+        # interceptor simply going silent. The watcher has already identified the
+        # product and the brief names it, so the interceptor gains little from
         # watching and loses the conversation.
-        room_input_options=RoomInputOptions(video_enabled=interview is None),
+        room_input_options=RoomInputOptions(video_enabled=intercept is None),
     )
 
-    if interview:
-        await interview.run(ctx, session, user_id=user_id)
+    if intercept:
+        await intercept.run(ctx, session, user_id=user_id)
         return
 
     # Results that finished after a previous call ended are waiting at the

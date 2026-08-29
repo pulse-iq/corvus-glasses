@@ -59,8 +59,8 @@ struct VisionRootView: View {
   /// Upstream ships without a gateway token (it is per-person identity), so an
   /// install with none configured sees only their access-code gate.
   ///
-  /// Corvus is not a user of that gateway. Stage 1 calls a vision model
-  /// directly and Stage 2's backend is still undecided, so the gate only stands
+  /// Corvus is not a user of that gateway. The watcher calls a vision model
+  /// directly and the interceptors bring their own transport, so the gate stands
   /// between us and the Watcher, holding out for a code that
   /// api.visionagents.app alone can issue. Restore the check if we ever adopt
   /// their gateway; if we run our own, point cloudGatewayURL at it instead.

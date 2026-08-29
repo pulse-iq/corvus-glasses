@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stage 1 detector on the Anthropic Messages API.
+/// Watcher detector on the Anthropic Messages API.
 ///
 /// Raw HTTP rather than an SDK: there is no official Anthropic SDK for Swift,
 /// and this is a single stateless request. Thinking is left off entirely --

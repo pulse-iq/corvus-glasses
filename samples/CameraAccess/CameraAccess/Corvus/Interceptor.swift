@@ -1,7 +1,7 @@
 import Foundation
 
 /// One question asked and whatever came back.
-struct InterviewTurn: Codable, Identifiable, Equatable {
+struct InterceptTurn: Codable, Identifiable, Equatable {
   var id: String = UUID().uuidString
   let question: String
   var askedAt: Date
@@ -35,21 +35,21 @@ struct InterviewTurn: Codable, Identifiable, Equatable {
 }
 
 /// A complete intercept: what fired it, what was asked, what was said.
-struct InterviewRecord: Codable, Identifiable, Equatable {
+struct InterceptRecord: Codable, Identifiable, Equatable {
   var id: String = UUID().uuidString
   let studyID: String
   let itemID: String
   let itemName: String
   let triggeredAt: Date
   let confidence: Double
-  var turns: [InterviewTurn] = []
+  var turns: [InterceptTurn] = []
   var endedAt: Date?
-  /// Set when the interview did not complete normally.
+  /// Set when the intercept did not complete normally.
   var abortReason: String?
-  /// How a normally-completed interview ended: the model's own reason, or the
+  /// How a normally-completed intercept ended: the model's own reason, or the
   /// turn limit. Distinct from `abortReason`, which means something went wrong.
   var endedBecause: String?
-  var interviewer: String?
+  var interceptor: String?
   var brain: String?
   /// Substantive questions asked, opener included. Re-asks excluded, which is
   /// why this is not just `turns.count`.
@@ -66,30 +66,30 @@ struct InterviewRecord: Codable, Identifiable, Equatable {
   }
 }
 
-/// Stage 2. Takes a trigger and conducts the interview.
+/// Takes a trigger and conducts the intercept.
 ///
-/// The whole point of the seam: `ScriptedInterviewer` speaks and records
-/// locally today, and a `LiveKitInterviewer` running a realtime conversation
-/// can replace it later without Stage 1, the study config, or the log format
+/// The whole point of the seam: `ScriptedInterceptor` speaks and records
+/// locally today, and a `LiveKitInterceptor` running a realtime conversation
+/// can replace it later without the watcher, the study config, or the log format
 /// noticing. Same shape as `ProductDetector`, for the same reason.
 @MainActor
-protocol Interviewer: AnyObject {
+protocol Interceptor: AnyObject {
   var name: String { get }
   var isConfigured: Bool { get }
 
   /// Runs to completion, or returns a record carrying `abortReason`. It does
-  /// not throw: an interview that half-happened is still data, and the watcher
+  /// not throw: an intercept that half-happened is still data, and the watcher
   /// must be released either way.
   /// `frame` is the JPEG that fired the trigger, when one was kept. Passed so
-  /// an interviewer can be concrete about the specific product in someone's
+  /// an interceptor can be concrete about the specific product in someone's
   /// hand rather than the category.
-  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterviewRecord
+  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterceptRecord
 
   /// Stop early -- the wearer took the glasses off, the study was switched.
   func cancel()
 }
 
-enum InterviewerKind: String, CaseIterable, Identifiable {
+enum InterceptorKind: String, CaseIterable, Identifiable {
   /// Every question written in advance, in the study file. No model in the
   /// loop. Kept as the deterministic control: identical wording for every
   /// participant is sometimes exactly what a study wants.
@@ -113,11 +113,11 @@ enum InterviewerKind: String, CaseIterable, Identifiable {
   }
 
   @MainActor
-  func make(liveKit: LiveKitSession? = nil) -> Interviewer? {
+  func make(liveKit: LiveKitSession? = nil) -> Interceptor? {
     switch self {
-    case .scripted: return ScriptedInterviewer()
-    case .conversational: return ConversationalInterviewer()
-    case .liveKit: return LiveKitInterviewer(session: liveKit)
+    case .scripted: return ScriptedInterceptor()
+    case .conversational: return ConversationalInterceptor()
+    case .liveKit: return LiveKitInterceptor(session: liveKit)
     }
   }
 }

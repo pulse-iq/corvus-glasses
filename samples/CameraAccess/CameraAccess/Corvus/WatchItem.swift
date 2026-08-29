@@ -10,12 +10,12 @@ struct WatchItem: Identifiable, Codable, Equatable, Hashable {
   /// Other names the product goes by on packaging or in speech. Fed to the
   /// model as recognition hints; never returned.
   let aliases: [String]
-  /// The opening interview question for this item. Stage 2 seeds the voice
-  /// session with it; Stage 1 only carries it so the trigger arrives complete.
+  /// The opening intercept question for this item. The interceptor seeds the
+  /// voice session with it; the watcher carries it so the trigger is whole.
   let question: String
   /// Asked in order after the opening question, each with its own recording.
   /// Empty is the normal case -- an intercept earns a few seconds of someone's
-  /// attention, not an interview.
+  /// attention, not an intercept.
   let followUps: [String]
 
   init(

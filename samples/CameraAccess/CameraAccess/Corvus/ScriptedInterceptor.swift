@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-/// Stage 2, half-duplex: ask, listen, ask the follow-ups, write it down.
+/// Half-duplex: ask, listen, ask the follow-ups, write it down.
 ///
 /// It never listens while it speaks, which is what lets it skip the whole
 /// realtime-audio apparatus -- no echo cancellation, no barge-in, no streaming
@@ -9,9 +9,9 @@ import Foundation
 /// answering before the question ends is not heard until the recorder opens,
 /// and there is no way to interrupt Corvus mid-sentence. That trade is fine for
 /// one question and a couple of follow-ups; it is the reason a realtime
-/// `Interviewer` will eventually replace this one.
+/// `Interceptor` will eventually replace this one.
 @MainActor
-final class ScriptedInterviewer: Interviewer {
+final class ScriptedInterceptor: Interceptor {
   let name = "Scripted"
 
   private let speaker = SpeechPlayer()
@@ -30,15 +30,15 @@ final class ScriptedInterviewer: Interviewer {
     recorder.cancel()
   }
 
-  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterviewRecord {
+  func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterceptRecord {
     cancelled = false
-    var record = InterviewRecord(
+    var record = InterceptRecord(
       studyID: study.id,
       itemID: trigger.item.id,
       itemName: trigger.item.displayName,
       triggeredAt: trigger.firedAt,
       confidence: trigger.confidence)
-    record.interviewer = name
+    record.interceptor = name
 
     // Take the route first: a failure here means the wearer would be recorded
     // without ever hearing a question, which is worse than not starting.
@@ -49,7 +49,7 @@ final class ScriptedInterviewer: Interviewer {
       record.routeOutput = activation.outputName
       record.routeMatchedGlasses = activation.matchedGlasses
       if !activation.matchedGlasses {
-        NSLog("[Corvus] interview audio is NOT on the glasses: in=%@ out=%@",
+        NSLog("[Corvus] intercept audio is NOT on the glasses: in=%@ out=%@",
               activation.inputName, activation.outputName)
       }
     } catch {
@@ -71,7 +71,7 @@ final class ScriptedInterviewer: Interviewer {
         record.abortReason = "cancelled"
         break
       }
-      var turn = InterviewTurn(question: question, askedAt: Date())
+      var turn = InterceptTurn(question: question, askedAt: Date())
       await speaker.say(question)
       if cancelled {
         turn.endedBecause = "cancelled"
@@ -80,7 +80,7 @@ final class ScriptedInterviewer: Interviewer {
         break
       }
 
-      let filename = "interview-\(record.id)-\(index).m4a"
+      let filename = "intercept-\(record.id)-\(index).m4a"
       let url = log.sessionDirectory.appendingPathComponent("audio", isDirectory: true)
         .appendingPathComponent(filename)
       try? FileManager.default.createDirectory(
@@ -109,7 +109,7 @@ final class ScriptedInterviewer: Interviewer {
     record.endedAt = Date()
     finish(record)
 
-    // Transcribe off the interview's own timeline. The watcher is released the
+    // Transcribe off the intercept's own timeline. The watcher is released the
     // moment this returns, so the wearer is never waiting on an API call.
     if CorvusConfig.transcribeAnswers {
       let snapshot = record
@@ -121,26 +121,26 @@ final class ScriptedInterviewer: Interviewer {
 
   // MARK: - Persistence
 
-  private func finish(_ record: InterviewRecord) {
+  private func finish(_ record: InterceptRecord) {
     write(record)
     log.append(.init(
-      kind: "interview",
+      kind: "intercept",
       at: record.endedAt ?? Date(),
       itemID: record.itemID,
       confidence: record.confidence,
       error: record.abortReason,
       note: "turns=\(record.turns.count) route=\(record.routeOutput ?? "?") "
         + "glasses=\(record.routeMatchedGlasses.map(String.init) ?? "?")"))
-    NSLog("[Corvus] interview %@ finished: %d turn(s)%@",
+    NSLog("[Corvus] intercept %@ finished: %d turn(s)%@",
           record.itemID, record.turns.count,
           record.abortReason.map { " aborted: \($0)" } ?? "")
   }
 
-  /// One file per interview, rewritten as transcripts land. Separate from the
+  /// One file per intercept, rewritten as transcripts land. Separate from the
   /// event log because this is the deliverable -- the thing someone reads --
   /// rather than a trace of what the app did.
-  private func write(_ record: InterviewRecord) {
-    let directory = log.sessionDirectory.appendingPathComponent("interviews", isDirectory: true)
+  private func write(_ record: InterceptRecord) {
+    let directory = log.sessionDirectory.appendingPathComponent("intercepts", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
@@ -150,7 +150,7 @@ final class ScriptedInterviewer: Interviewer {
       to: directory.appendingPathComponent("\(record.id).json"), options: .atomic)
   }
 
-  private func transcribe(_ record: InterviewRecord) async {
+  private func transcribe(_ record: InterceptRecord) async {
     guard transcriber.isConfigured else {
       NSLog("[Corvus] no OpenAI key; audio kept, transcripts skipped")
       return

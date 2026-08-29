@@ -116,7 +116,7 @@ class StreamSessionViewModel: ObservableObject {
   /// here, so the room publishes exactly what the glasses see.
   var onDecodedFrame: ((CVPixelBuffer) -> Void)?
 
-  /// Corvus Stage 1 tap: every frame the app turns into an image, foreground
+  /// Corvus watcher tap: every frame the app turns into an image, foreground
   /// and background alike. Separate from `onDecodedFrame`, which feeds the
   /// LiveKit publisher and fires only on the background path -- the watcher
   /// needs a continuous feed regardless of whether the phone is in a pocket.

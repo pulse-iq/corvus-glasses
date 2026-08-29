@@ -1,10 +1,10 @@
 import AVFoundation
 import SwiftUI
 
-/// The Stage 1 bench.
+/// The watcher bench.
 ///
 /// Points the phone camera at the watcher and shows every gate it passes
-/// through, because tuning this stage is entirely about seeing *why* a pickup
+/// through, because tuning the watcher is entirely about seeing *why* a pickup
 /// did or did not fire. Runs with no glasses, no room and no server.
 struct CorvusWatcherView: View {
   @StateObject private var watcher = WatcherCoordinator(study: StudyStore.shared.active)

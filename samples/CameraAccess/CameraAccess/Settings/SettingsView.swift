@@ -52,15 +52,15 @@ struct SettingsView: View {
   @AppStorage(SettingsManager.showCaptionsKey) private var showCaptions = true
   @AppStorage("corvus.watchOnCameraScreen") private var watchOnCameraScreen = true
   @AppStorage("corvus.showWatcherHUD") private var showWatcherHUD = true
-  @AppStorage("corvus.interviewsEnabled") private var interviewsEnabled = true
+  @AppStorage("corvus.interceptsEnabled") private var interceptsEnabled = true
   @AppStorage("corvus.transcribeAnswers") private var transcribeAnswers = true
   @AppStorage("corvus.audioRouteMode") private var audioRouteRaw = AudioRouteMode.glassesBothWays.rawValue
-  @AppStorage("corvus.interviewer") private var interviewerRaw = InterviewerKind.conversational.rawValue
+  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.conversational.rawValue
 
   var body: some View {
     NavigationView {
       Form {
-        // Corvus Stage 1 bench. Runs the watcher on the phone camera with no
+        // The watcher bench. Runs the watcher on the phone camera with no
         // glasses, room or server -- the only way to tune detection thresholds
         // without a shopping trip.
         Section(header: Text("Corvus"), footer: Text(
@@ -77,10 +77,10 @@ struct SettingsView: View {
           Toggle("Show detection overlay", isOn: $showWatcherHUD)
         }
 
-        // Stage 2. Off leaves Stage 1 exactly as it was -- trigger, banner,
+        // Intercepts. Off leaves the watcher exactly as it was -- trigger, banner,
         // log, silence -- which is the right setting while tuning detection.
-        Section(header: Text("Interviews"), footer: Text(
-          interviewerRaw == InterviewerKind.conversational.rawValue
+        Section(header: Text("Intercepts"), footer: Text(
+          interceptorRaw == InterceptorKind.conversational.rawValue
             ? "The study's opening question is always asked word for word. After "
               + "that a model hears the answer and picks the follow-up, or stops. "
               + "Expect about two seconds of silence between turns."
@@ -90,9 +90,9 @@ struct SettingsView: View {
               + "worth far more once there is background noise."
             : "Glasses speaker at full quality, answer recorded on the phone. "
               + "Cleaner audio, but the phone hears the room rather than the wearer.")) {
-          Toggle("Ask the question out loud", isOn: $interviewsEnabled)
-          Picker("Style", selection: $interviewerRaw) {
-            ForEach(InterviewerKind.allCases) { kind in
+          Toggle("Ask the question out loud", isOn: $interceptsEnabled)
+          Picker("Style", selection: $interceptorRaw) {
+            ForEach(InterceptorKind.allCases) { kind in
               Text(kind.label).tag(kind.rawValue)
             }
           }
@@ -220,7 +220,7 @@ struct SettingsView: View {
   ///
   /// /health rather than upstream's /apps: Corvus points this at its own token
   /// server, which has no /apps, so a working setup reported "Server error 404"
-  /// beside interviews that were running fine. Both servers answer /health.
+  /// beside intercepts that were running fine. Both servers answer /health.
   private func refreshGatewayStatus() async {
     
     gatewayStatus = .checking

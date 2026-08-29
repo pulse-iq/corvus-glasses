@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark Stage 1 vision backends against a corpus of saved frames.
+"""Benchmark the watcher's vision backends against a corpus of saved frames.
 
 The app writes that corpus: turn on "Save frames for benchmarking" in the
 Watcher screen, walk a shopping trip, then pull the session directory off the
@@ -384,7 +384,7 @@ def main() -> int:
                 precision = tp / (tp + fp) if tp + fp else 0.0
                 recall = tp / (tp + fn_) if tp + fn_ else 0.0
                 print(f"  labelled : {labelled} frames")
-                print(f"  precision: {precision:.2f}   (a false positive is a wrong interview)")
+                print(f"  precision: {precision:.2f}   (a false positive is a wrong intercept)")
                 print(f"  recall   : {recall:.2f}   (a false negative is a missed one)")
                 print(f"  tp {tp}  fp {fp}  fn {fn_}  tn {tn}")
         else:

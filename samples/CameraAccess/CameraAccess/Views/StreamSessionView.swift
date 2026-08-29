@@ -24,8 +24,8 @@ struct StreamSessionView: View {
   private let wearablesViewModel: WearablesViewModel?
   @StateObject private var viewModel: StreamSessionViewModel
   @StateObject private var liveKit = LiveKitSession()
-  /// Corvus Stage 1. Watches the same glasses frames the call publishes and
-  /// decides when a pickup is worth interviewing about.
+  /// The Corvus watcher. Watches the same glasses frames the call publishes
+  /// and decides when a pickup is worth interrupting for.
   @StateObject private var watcher = WatcherCoordinator(study: StudyStore.shared.active)
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
   @AppStorage(IntelligenceEngine.defaultsKey) private var intelligenceRaw = IntelligenceEngine.gemini.rawValue
@@ -36,9 +36,9 @@ struct StreamSessionView: View {
   @AppStorage("corvus.showWatcherHUD") private var showHUD = true
   @AppStorage("corvus.watchOnCameraScreen") private var watchHere = true
   /// Observed here rather than only read at launch: Settings writes this key,
-  /// and the coordinator builds its interviewer once in init, so without a
+  /// and the coordinator builds its interceptor once in init, so without a
   /// watcher on it the picker silently did nothing until the next relaunch.
-  @AppStorage("corvus.interviewer") private var interviewerRaw = InterviewerKind.conversational.rawValue
+  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.conversational.rawValue
 
   private var captureSource: CaptureSource {
     CaptureSource(rawValue: captureSourceRaw) ?? .iPhoneCamera
@@ -115,7 +115,7 @@ struct StreamSessionView: View {
         }
         Spacer()
 
-        // Stage 1, visible. Bottom-left so it clears the call chrome.
+        // The watcher, visible. Bottom-left so it clears the call chrome.
         if showHUD {
           HStack {
             WatcherHUD(watcher: watcher)
@@ -134,7 +134,7 @@ struct StreamSessionView: View {
       viewModel.onDecodedFrame = { [weak liveKit] pixelBuffer in
         liveKit?.pushGlassesFrame(pixelBuffer)
       }
-      // Stage 1 rides the same feed. Its own sampler throttles to ~1fps, so
+      // The watcher rides the same feed. Its own sampler throttles to ~1fps, so
       // handing it every frame costs a closure call.
       viewModel.onAnalysisFrame = { [weak watcher] image in
         // Heartbeat first: the audio probe needs proof DAT is still delivering
@@ -142,7 +142,7 @@ struct StreamSessionView: View {
         FrameHeartbeat.shared.tick()
         watcher?.submit(image: image)
       }
-      // Realtime interviews run through this screen's room.
+      // Realtime intercepts run through this screen's room.
       watcher.attach(liveKit: liveKit)
       if watchHere { watcher.start() }
       if CorvusConfig.useLiveKitCall {
@@ -173,10 +173,10 @@ struct StreamSessionView: View {
         }
       }
     }
-    .onChange(of: interviewerRaw) { raw in
-      // Rebuilds the interviewer in place, so the choice applies to the next
+    .onChange(of: interceptorRaw) { raw in
+      // Rebuilds the interceptor in place, so the choice applies to the next
       // trigger rather than the next launch.
-      if let kind = InterviewerKind(rawValue: raw) { watcher.use(kind) }
+      if let kind = InterceptorKind(rawValue: raw) { watcher.use(kind) }
     }
     .onChange(of: intelligenceRaw) { _ in
       // The brain is chosen at session start (room-token metadata), so a live

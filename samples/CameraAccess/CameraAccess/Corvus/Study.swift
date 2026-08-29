@@ -5,7 +5,7 @@ import Foundation
 ///
 /// This is the row shape. Today it loads from JSON on disk; when Corvus's
 /// backend takes over, `Study` becomes a table and `StudyStore` becomes a fetch
-/// — the rest of Stage 1 should not have to notice. Everything a run needs is
+/// — the rest of the watcher should not have to notice. Everything a run needs is
 /// here rather than compiled in, because the watchlist changes per participant
 /// and a rebuild per participant is not a workflow.
 struct Study: Codable, Identifiable, Equatable {
@@ -19,7 +19,7 @@ struct Study: Codable, Identifiable, Equatable {
   /// Where this study happens. Omitted means a grocery store.
   var scene: StudyScene?
   /// What the researcher is trying to learn, in plain prose. Unlike `notes`
-  /// this IS sent to the model -- it is what a conversational interviewer steers
+  /// this IS sent to the model -- it is what a conversational interceptor steers
   /// by, and the difference between a probing follow-up and a generic one.
   var researchGoal: String?
 
@@ -141,7 +141,7 @@ final class StudyStore: ObservableObject {
 extension TriggerPolicy: Codable {
   enum CodingKeys: String, CodingKey {
     case minConfidence, consecutiveHits, streakWindow
-    case perItemCooldown, globalCooldown, maxInterviewDuration
+    case perItemCooldown, globalCooldown, maxInterceptDuration
   }
 
   public init(from decoder: Decoder) throws {
@@ -152,8 +152,8 @@ extension TriggerPolicy: Codable {
     if let v = try c.decodeIfPresent(Double.self, forKey: .streakWindow) { p.streakWindow = v }
     if let v = try c.decodeIfPresent(Double.self, forKey: .perItemCooldown) { p.perItemCooldown = v }
     if let v = try c.decodeIfPresent(Double.self, forKey: .globalCooldown) { p.globalCooldown = v }
-    if let v = try c.decodeIfPresent(Double.self, forKey: .maxInterviewDuration) {
-      p.maxInterviewDuration = v
+    if let v = try c.decodeIfPresent(Double.self, forKey: .maxInterceptDuration) {
+      p.maxInterceptDuration = v
     }
     self = p
   }
@@ -165,6 +165,6 @@ extension TriggerPolicy: Codable {
     try c.encode(streakWindow, forKey: .streakWindow)
     try c.encode(perItemCooldown, forKey: .perItemCooldown)
     try c.encode(globalCooldown, forKey: .globalCooldown)
-    try c.encode(maxInterviewDuration, forKey: .maxInterviewDuration)
+    try c.encode(maxInterceptDuration, forKey: .maxInterceptDuration)
   }
 }

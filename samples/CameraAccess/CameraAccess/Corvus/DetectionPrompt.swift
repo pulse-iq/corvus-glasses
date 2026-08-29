@@ -1,6 +1,6 @@
 import Foundation
 
-/// The Stage 1 prompt, shared verbatim by every backend.
+/// The watcher's detection prompt, shared verbatim by every backend.
 ///
 /// Identical text across models is what makes the benchmark mean anything: a
 /// difference in the numbers should be the model, not the wording. Change it
