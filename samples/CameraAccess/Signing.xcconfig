@@ -1,0 +1,22 @@
+// Signing identity. Not secret, but per-developer: an explicit App ID belongs
+// to exactly one Apple team, so a clone carrying someone else's team and bundle
+// id cannot be signed by anyone but them.
+//
+// Two ways to set yours. Either edit this file, or -- better -- put the same
+// lines in Signing.local.xcconfig, which is gitignored and included at the
+// bottom of this file. The local copy wins, and `git status` stays clean, so
+// your team id never rides along in a commit or fights a pull.
+
+// Xcode -> target -> Signing & Capabilities, or Apple Developer -> Membership.
+// Empty means Xcode asks you to pick a team before it will sign.
+DEVELOPMENT_TEAM =
+
+// Reachable by a second developer only after they change it: the original is
+// registered to the original team. Two things are keyed to this and move with
+// it -- the container path that `devicectl ... --domain-identifier` pulls
+// session output from, and the app's identity to the Meta AI app, which means
+// re-registering in Developer Mode. The corvusglasses:// URL scheme is set
+// separately in Info.plist and does not move.
+PRODUCT_BUNDLE_IDENTIFIER = com.meetcorvus.glasses
+
+#include? "Signing.local.xcconfig"
