@@ -57,7 +57,7 @@ struct OpenAIProductDetector: ProductDetector {
     }
 
     return DetectionOutcome(
-      detection: try DetectionParser.parse(text, watchlist: study.items),
+      observation: try DetectionParser.parse(text, study: study),
       latency: latency,
       rawResponse: text,
       detectorName: name)

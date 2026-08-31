@@ -76,9 +76,16 @@ struct CorvusWatcherView: View {
           Text(watcher.study.name)
         }
       }
-      Text("\(watcher.study.items.count) items watched")
+      Text("\(watcher.study.items.count) items, \(watcher.study.categories.count) sections watched")
         .font(.caption)
         .foregroundStyle(.secondary)
+      // A study that failed to decode is invisible otherwise: the picker just
+      // has one fewer entry, and the watcher looks like it is not firing.
+      ForEach(studies.loadErrors, id: \.self) { problem in
+        Label(problem, systemImage: "exclamationmark.triangle")
+          .font(.caption)
+          .foregroundStyle(.orange)
+      }
 
       Picker("Detector", selection: $detectorKind) {
         ForEach(DetectorKind.allCases) { kind in
@@ -114,10 +121,11 @@ struct CorvusWatcherView: View {
       if let latency = watcher.lastLatency {
         row("Latency", String(format: "%.0f ms", latency * 1000))
       }
-      if let d = watcher.lastDetection {
-        row("Holding", d.holding ? "yes" : "no")
-        row("Item", d.itemID ?? d.productGuess ?? "-")
-        row("Confidence", String(format: "%.2f", d.confidence))
+      if let o = watcher.lastObservation {
+        row("Held", o.held.isEmpty ? "nothing" : o.held.map(describe).joined(separator: ", "))
+        row("Facing", o.facing.map { String(format: "%@ (%.2f)", $0.categoryID, $0.confidence) }
+          ?? "-")
+        row("Scene", o.scene.rawValue)
       }
       if let decision = watcher.lastDecision {
         row("Decision", decision.label)
@@ -142,8 +150,8 @@ struct CorvusWatcherView: View {
         Text("Triggers").font(.headline)
         ForEach(watcher.triggers, id: \.firedAt) { trigger in
           VStack(alignment: .leading, spacing: 2) {
-            Text(trigger.item.displayName).bold()
-            Text(trigger.item.question)
+            Text("\(trigger.primitive.rawValue) · \(trigger.subject.displayName)").bold()
+            Text(trigger.subject.question)
               .font(.caption)
               .foregroundStyle(.secondary)
             Text(String(format: "%.2f confidence, %d hits", trigger.confidence, trigger.hitCount))
@@ -156,6 +164,11 @@ struct CorvusWatcherView: View {
         }
       }
     }
+  }
+
+  private func describe(_ held: HeldProduct) -> String {
+    let what = held.itemID ?? held.categoryID ?? held.productGuess ?? "something"
+    return String(format: "%@%@ %.2f", what, held.examining ? " (reading)" : "", held.confidence)
   }
 
   private func row(_ label: String, _ value: String) -> some View {

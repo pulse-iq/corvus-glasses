@@ -20,12 +20,27 @@ final class CorvusLog {
     var latencyMS: Int?
     var holding: Bool?
     var itemID: String?
+    var categoryID: String?
     var productGuess: String?
+    var examining: Bool?
+    var facingCategoryID: String?
+    var scene: String?
+    var heldCount: Int?
     var confidence: Double?
+    var primitive: String?
+    var targetID: String?
     var decision: String?
     var framePath: String?
     var error: String?
     var note: String?
+    /// The whole verdict, including the frames where nothing matched.
+    ///
+    /// The flat fields above are for grepping and for loading into a dataframe;
+    /// this is for replay. Keeping the negatives is what lets a new primitive be
+    /// developed against a trip already walked instead of against a new one --
+    /// and the frames where a product left someone's hands are exactly the ones
+    /// a flat "holding: false" throws away.
+    var observation: Observation?
   }
 
   private let queue = DispatchQueue(label: "com.corvus.log")

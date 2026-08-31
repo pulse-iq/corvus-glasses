@@ -49,9 +49,9 @@ struct WatcherHUD: View {
   /// right thing" are the two questions a field test has to answer.
   private func triggerBanner(_ trigger: Trigger) -> some View {
     VStack(alignment: .leading, spacing: 2) {
-      Text("TRIGGER  \(trigger.item.displayName)")
+      Text("TRIGGER  \(trigger.primitive.rawValue.uppercased())  \(trigger.subject.displayName)")
         .font(.system(size: 13, weight: .bold, design: .monospaced))
-      Text("\"\(trigger.item.question)\"")
+      Text("\"\(trigger.subject.question)\"")
         .font(.system(size: 12))
         .italic()
       Text(String(format: "conf %.2f · %d hits · %@",
@@ -78,8 +78,8 @@ struct WatcherHUD: View {
             .foregroundStyle(.white.opacity(0.7))
         }
       }
-      if let d = watcher.lastDetection {
-        Text(verbatim: line(for: d))
+      if let o = watcher.lastObservation {
+        Text(verbatim: line(for: o))
           .foregroundStyle(.white.opacity(0.85))
       }
       if let decision = watcher.lastDecision {
@@ -94,10 +94,25 @@ struct WatcherHUD: View {
     }
   }
 
-  private func line(for d: Detection) -> String {
-    guard d.holding else { return "not holding" }
-    let what = d.itemID ?? d.productGuess ?? "something"
-    return String(format: "holding %@ (%.2f)", what, d.confidence)
+  /// One line for the whole frame. Deliberately mentions the section even when
+  /// the hands are empty: standing in front of the bread is the state the dwell
+  /// primitive is built on, and a readout that only ever said "not holding"
+  /// could not tell a working dwell from a broken one.
+  private func line(for o: Observation) -> String {
+    var parts: [String] = []
+    if o.held.isEmpty {
+      parts.append("hands empty")
+    } else {
+      parts.append(o.held.map { held in
+        let what = held.itemID ?? held.categoryID ?? held.productGuess ?? "something"
+        return String(format: "%@%@ %.2f", what, held.examining ? "*" : "", held.confidence)
+      }.joined(separator: " + "))
+    }
+    if let facing = o.facing {
+      parts.append(String(format: "at %@ %.2f", facing.categoryID, facing.confidence))
+    }
+    parts.append(o.scene.rawValue)
+    return parts.joined(separator: " · ")
   }
 
   private func relative(_ date: Date) -> String {

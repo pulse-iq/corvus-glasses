@@ -39,7 +39,7 @@ protocol InterceptBrain: Sendable {
 
   func decide(
     study: Study,
-    item: WatchItem,
+    subject: InterceptSubject,
     currentQuestion: String,
     history: [BrainTurn],
     answerAudio: Data,
@@ -56,7 +56,7 @@ protocol InterceptBrain: Sendable {
 /// annoying one is entirely in this text, and it needs to be reviewable as
 /// prose rather than hunted for inside a request body.
 enum InterceptPrompt {
-  static func system(study: Study, item: WatchItem, turnsRemaining: Int) -> String {
+  static func system(study: Study, subject: InterceptSubject, turnsRemaining: Int) -> String {
     let scene = study.setting
     let goal = study.researchGoal ?? """
       Understand what drove this person's attention and choice at the shelf, in \
@@ -65,9 +65,9 @@ enum InterceptPrompt {
 
     return """
     You are conducting a very short intercept interview. The person is wearing \
-    camera glasses, is \(scene.wearer), and has just picked up \
-    \(item.displayName). They have agreed to be interviewed while they go about \
-    their day. You speak to them through their glasses; they answer out loud.
+    camera glasses and is \(scene.wearer). \(subject.situation) They have agreed \
+    to be interviewed while they go about their day. You speak to them through \
+    their glasses; they answer out loud.
 
     What the researcher is trying to learn:
     \(goal)
@@ -133,7 +133,7 @@ extension InterceptPrompt {
   /// It is generated on the phone and shipped to the worker in the room token's
   /// metadata rather than living in the Python agent, so the study stays the
   /// single source of truth for how Corvus intercepts.
-  static func realtime(study: Study, item: WatchItem) -> String {
+  static func realtime(study: Study, subject: InterceptSubject) -> String {
     let scene = study.setting
     let goal = study.researchGoal ?? """
       Understand what drove this person's attention and choice at the shelf, in \
@@ -143,15 +143,15 @@ extension InterceptPrompt {
 
     return """
     You are conducting a very short intercept interview, out loud, through the \
-    smart glasses someone is wearing. They are \(scene.wearer) and have just \
-    picked up \(item.displayName). They agreed to be interviewed while they go \
-    about their day. They can hear you and interrupt you at any moment.
+    smart glasses someone is wearing. They are \(scene.wearer). \
+    \(subject.situation) They agreed to be interviewed while they go about their \
+    day. They can hear you and interrupt you at any moment.
 
     What the researcher is trying to learn:
     \(goal)
 
     Your first line is exactly this, word for word:
-    "\(item.question)"
+    "\(subject.question)"
 
     Then stop talking and listen.
 
@@ -210,7 +210,7 @@ struct GeminiInterceptBrain: InterceptBrain {
 
   func decide(
     study: Study,
-    item: WatchItem,
+    subject: InterceptSubject,
     currentQuestion: String,
     history: [BrainTurn],
     answerAudio: Data,
@@ -267,7 +267,7 @@ struct GeminiInterceptBrain: InterceptBrain {
     let body: [String: Any] = [
       "system_instruction": [
         "parts": [["text": InterceptPrompt.system(
-          study: study, item: item, turnsRemaining: turnsRemaining)]]
+          study: study, subject: subject, turnsRemaining: turnsRemaining)]]
       ],
       "contents": contents,
       "generationConfig": [

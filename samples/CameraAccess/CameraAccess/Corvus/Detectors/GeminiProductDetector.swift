@@ -34,7 +34,7 @@ struct GeminiProductDetector: ProductDetector {
       "generationConfig": [
         "temperature": 0,
         "responseMimeType": "application/json",
-        "maxOutputTokens": 200,
+        "maxOutputTokens": 500,
         // Flash-family models think by default; for a yes/no-plus-label call it
         // buys nothing and costs the latency the watcher is built around.
         "thinkingConfig": ["thinkingBudget": 0],
@@ -64,7 +64,7 @@ struct GeminiProductDetector: ProductDetector {
     }
 
     return DetectionOutcome(
-      detection: try DetectionParser.parse(text, watchlist: study.items),
+      observation: try DetectionParser.parse(text, study: study),
       latency: latency,
       rawResponse: text,
       detectorName: name)

@@ -34,11 +34,12 @@ final class ScriptedInterceptor: Interceptor {
     cancelled = false
     var record = InterceptRecord(
       studyID: study.id,
-      itemID: trigger.item.id,
-      itemName: trigger.item.displayName,
+      itemID: trigger.subject.targetID,
+      itemName: trigger.subject.displayName,
       triggeredAt: trigger.firedAt,
       confidence: trigger.confidence)
     record.interceptor = name
+    record.primitive = trigger.primitive.rawValue
 
     // Take the route first: a failure here means the wearer would be recorded
     // without ever hearing a question, which is worse than not starting.
@@ -65,7 +66,7 @@ final class ScriptedInterceptor: Interceptor {
     // something is about to speak to them.
     try? await Task.sleep(nanoseconds: 400_000_000)
 
-    let questions = [trigger.item.question] + trigger.item.followUps
+    let questions = [trigger.subject.question] + trigger.subject.followUps
     for (index, question) in questions.enumerated() {
       if cancelled {
         record.abortReason = "cancelled"

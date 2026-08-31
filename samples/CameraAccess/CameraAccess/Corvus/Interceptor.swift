@@ -51,6 +51,10 @@ struct InterceptRecord: Codable, Identifiable, Equatable {
   var endedBecause: String?
   var interceptor: String?
   var brain: String?
+  /// Which primitive earned this intercept. The same product picked up and
+  /// read up close are different moments and want to be countable apart, and
+  /// once the question has been asked nothing else in the record says which.
+  var primitive: String?
   /// Substantive questions asked, opener included. Re-asks excluded, which is
   /// why this is not just `turns.count`.
   var questionsAsked: Int?

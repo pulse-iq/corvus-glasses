@@ -16,8 +16,13 @@ Usage:
                                            [--limit N]
 
 Labels file (optional; without it the script just reports what each model saw):
-    {"frames/cereal-1712.jpg": {"holding": true, "item_id": "cereal"},
-     "frames/frame-1713.jpg":  {"holding": false, "item_id": null}}
+    {"frames/cereal-1712.jpg": {"item_id": "cereal"},
+     "frames/frame-1713.jpg":  {"item_id": null}}
+
+    Precision and recall are scored on the held product, which is what the
+    watcher's oldest and best-tuned primitive turns on. The section and scene
+    fields are reported but not scored -- labelling those wants a corpus that
+    does not exist yet.
 
 Environment:
     GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
@@ -99,10 +104,11 @@ def load_prompt_template() -> str:
     body = re.sub(r"\\\n\s*", "", body)          # join continued lines
     body = "\n".join(line[4:] if line.startswith("    ") else line
                      for line in body.split("\n"))
-    for token in ("{catalogue}", "{wearer}", "{resting}"):
+    for token in ("{catalogue}", "{sections}", "{wearer}", "{resting}"):
         if token in body:
             sys.exit(f"prompt contains a literal {token}; extraction is confused")
     body = body.replace("\\(catalogue)", "{catalogue}")
+    body = body.replace("\\(sections)", "{sections}")
     body = body.replace("\\(scene.wearer)", "{wearer}")
     body = body.replace("\\(scene.restingPlaces)", "{resting}")
     if "\\(" in body:
@@ -151,9 +157,16 @@ def render_prompt(template: str, study: dict) -> str:
         + (f" (also called: {', '.join(i.get('aliases', []))})" if i.get("aliases") else "")
         for i in study["items"]
     )
+    sections = "\n".join(
+        f"- {c['id']}: {c['displayName']}"
+        + (f" (contains things like: {', '.join(c.get('memberHints', []))})"
+           if c.get("memberHints") else "")
+        for c in study.get("categories", [])
+    )
     scene = study.get("scene") or GROCERY_SCENE
     return (template
             .replace("{catalogue}", catalogue)
+            .replace("{sections}", sections)
             .replace("{wearer}", scene["wearer"])
             .replace("{resting}", scene["restingPlaces"]))
 
@@ -184,25 +197,86 @@ def first_json_object(text: str) -> str | None:
     return None
 
 
-def parse_detection(text: str, watchlist: list[dict]) -> dict:
+def _resolve(raw, rows: list[dict]) -> str | None:
+    """Land a model's answer on a real id, or on nothing at all.
+
+    Mirrors DetectionParser: the model is asked for an id from the list and will
+    occasionally return the display name, a near-miss slug, or "null". An
+    unresolvable id must never be counted as a hit.
+    """
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    if not raw or raw.lower() in ("null", "none", "n/a"):
+        return None
+    by_id = {r["id"].lower(): r["id"] for r in rows}
+    by_name = {r["displayName"].lower(): r["id"] for r in rows}
+    return by_id.get(raw.lower()) or by_name.get(raw.lower())
+
+
+def _clamp(value) -> float:
+    try:
+        return max(0.0, min(1.0, float(value or 0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def parse_observation(text: str, study: dict) -> dict:
+    """Mirrors DetectionParser.parse. Flat keys are for the scoring below."""
     blob = first_json_object(text)
     if not blob:
         raise ValueError(f"no JSON object in: {text[:200]}")
     obj = json.loads(blob)
 
-    raw_id = (obj.get("item_id") or "")
-    raw_id = raw_id.strip() if isinstance(raw_id, str) else ""
-    item_id = None
-    if raw_id and raw_id.lower() not in ("null", "none"):
-        by_id = {i["id"].lower(): i["id"] for i in watchlist}
-        by_name = {i["displayName"].lower(): i["id"] for i in watchlist}
-        item_id = by_id.get(raw_id.lower()) or by_name.get(raw_id.lower())
+    items = study["items"]
+    categories = study.get("categories", [])
+    by_item = {i["id"]: i for i in items}
 
+    held = []
+    for entry in obj.get("held") or []:
+        if not isinstance(entry, dict):
+            continue
+        item_id = _resolve(entry.get("item_id"), items)
+        # An item resolves its own section, so a model that names the product
+        # but forgets the category still lands in the right place.
+        own = by_item.get(item_id, {}).get("categoryID") if item_id else None
+        category_id = _resolve(entry.get("category_id"), categories) or own
+        product = entry.get("product")
+        if not (item_id or category_id or product):
+            continue
+        held.append({
+            "item_id": item_id,
+            "category_id": category_id,
+            "product": product,
+            "examining": bool(entry.get("examining", False)),
+            "confidence": _clamp(entry.get("confidence")),
+        })
+
+    facing = None
+    raw_facing = obj.get("facing")
+    if isinstance(raw_facing, dict):
+        category_id = _resolve(raw_facing.get("category_id"), categories)
+        if category_id:
+            facing = {"category_id": category_id,
+                      "confidence": _clamp(raw_facing.get("confidence"))}
+
+    scene = obj.get("scene")
+    scene = scene.lower() if isinstance(scene, str) else "other"
+    if scene not in ("aisle", "cart", "checkout", "other"):
+        scene = "other"
+
+    best = max(held, key=lambda h: h["confidence"], default=None)
     return {
-        "holding": bool(obj.get("holding", False)),
-        "item_id": item_id,
-        "product": obj.get("product"),
-        "confidence": max(0.0, min(1.0, float(obj.get("confidence") or 0))),
+        "held": held,
+        "facing": facing,
+        "scene": scene,
+        # Flattened for the scoring and the printout, the same way the log row is.
+        "holding": bool(held),
+        "item_id": best["item_id"] if best else None,
+        "category_id": best["category_id"] if best else None,
+        "product": best["product"] if best else None,
+        "examining": best["examining"] if best else False,
+        "confidence": best["confidence"] if best else 0.0,
     }
 
 
@@ -235,7 +309,7 @@ def call_gemini(model, prompt, b64):
             "generationConfig": {
                 "temperature": 0,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 200,
+                "maxOutputTokens": 500,
                 "thinkingConfig": {"thinkingBudget": 0},
             },
         },
@@ -276,7 +350,7 @@ def call_anthropic(model, prompt, b64):
          "anthropic-version": "2023-06-01"},
         {
             "model": model,
-            "max_tokens": 200,
+            "max_tokens": 500,
             "temperature": 0,
             "system": prompt,
             "messages": [{"role": "user", "content": [
@@ -332,7 +406,8 @@ def main() -> int:
     if args.labels:
         labels = json.loads(args.labels.read_text())
 
-    print(f"study: {study['id']} ({study['name']}) -- {len(watchlist)} items")
+    print(f"study: {study['id']} ({study['name']}) -- {len(watchlist)} items, "
+          f"{len(study.get('categories', []))} sections")
     print(f"{len(frames)} frames, models: {', '.join(chosen)}\n")
 
     for model_key in chosen:
@@ -345,7 +420,7 @@ def main() -> int:
             try:
                 raw = fn(model_id, prompt, b64)
                 elapsed = time.monotonic() - started
-                det = parse_detection(raw, watchlist)
+                det = parse_observation(raw, study)
             except Exception as exc:  # noqa: BLE001 - report, never abort the sweep
                 errors += 1
                 print(f"  !! {frame.name}: {exc}")
@@ -388,12 +463,20 @@ def main() -> int:
                 print(f"  recall   : {recall:.2f}   (a false negative is a missed one)")
                 print(f"  tp {tp}  fp {fp}  fn {fn_}  tn {tn}")
         else:
-            held = sum(1 for _, d in rows if d["item_id"])
-            print(f"  matched  : {held}/{len(rows)} frames landed on a watchlist item")
+            matched = sum(1 for _, d in rows if d["item_id"])
+            sectioned = sum(1 for _, d in rows if d["category_id"])
+            facing = sum(1 for _, d in rows if d["facing"])
+            print(f"  matched  : {matched}/{len(rows)} frames landed on a watchlist item")
+            print(f"  sectioned: {sectioned}/{len(rows)} landed on a section "
+                  f"(includes products the list does not name)")
+            print(f"  facing   : {facing}/{len(rows)} frames read as standing at a section")
             for frame, det in rows[:10]:
-                print(f"    {frame.name}: holding={det['holding']} "
-                      f"item={det['item_id']} guess={det['product']} "
-                      f"conf={det['confidence']:.2f}")
+                held = ", ".join(
+                    f"{h['item_id'] or h['category_id'] or h['product']}"
+                    f"{'*' if h['examining'] else ''} {h['confidence']:.2f}"
+                    for h in det["held"]) or "-"
+                at = det["facing"]["category_id"] if det["facing"] else "-"
+                print(f"    {frame.name}: held=[{held}] facing={at} scene={det['scene']}")
         print()
 
     return 0

@@ -37,11 +37,12 @@ final class ConversationalInterceptor: Interceptor {
     cancelled = false
     var record = InterceptRecord(
       studyID: study.id,
-      itemID: trigger.item.id,
-      itemName: trigger.item.displayName,
+      itemID: trigger.subject.targetID,
+      itemName: trigger.subject.displayName,
       triggeredAt: trigger.firedAt,
       confidence: trigger.confidence)
     record.interceptor = name
+    record.primitive = trigger.primitive.rawValue
     record.brain = brain.name
 
     do {
@@ -61,7 +62,7 @@ final class ConversationalInterceptor: Interceptor {
     try? await Task.sleep(nanoseconds: 400_000_000)
 
     var history: [BrainTurn] = []
-    var question = trigger.item.question
+    var question = trigger.subject.question
     let maxTurns = max(1, CorvusConfig.maxInterceptTurns)
     let maxReasks = max(0, CorvusConfig.maxReasks)
 
@@ -124,7 +125,7 @@ final class ConversationalInterceptor: Interceptor {
         let audio = try Data(contentsOf: url)
         let decision = try await brain.decide(
           study: study,
-          item: trigger.item,
+          subject: trigger.subject,
           currentQuestion: question,
           history: history,
           answerAudio: audio,

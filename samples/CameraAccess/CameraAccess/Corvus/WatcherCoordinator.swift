@@ -14,7 +14,7 @@ import UIKit
 final class WatcherCoordinator: ObservableObject {
   @Published private(set) var isRunning = false
   @Published private(set) var isDetecting = false
-  @Published private(set) var lastDetection: Detection?
+  @Published private(set) var lastObservation: Observation?
   @Published private(set) var lastDecision: TriggerDecision?
   @Published private(set) var lastLatency: TimeInterval?
   @Published private(set) var lastError: String?
@@ -43,11 +43,12 @@ final class WatcherCoordinator: ObservableObject {
   private let log = CorvusLog.shared
 
   var watchlist: [WatchItem] { study.items }
+  var sections: [WatchCategory] { study.categories }
 
   init(study: Study) {
     self.study = study
     self.detector = CorvusConfig.activeDetector.make()
-    self.machine = TriggerStateMachine(watchlist: study.items, policy: study.policy)
+    self.machine = TriggerStateMachine(study: study)
     self.interceptor = CorvusConfig.interceptor.make()
   }
 
@@ -75,9 +76,9 @@ final class WatcherCoordinator: ObservableObject {
     let wasRunning = isRunning
     if wasRunning { stop() }
     self.study = study
-    machine = TriggerStateMachine(watchlist: study.items, policy: study.policy)
+    machine = TriggerStateMachine(study: study)
     triggers.removeAll()
-    lastDetection = nil
+    lastObservation = nil
     lastDecision = nil
     if wasRunning { start() }
   }
@@ -165,66 +166,95 @@ final class WatcherCoordinator: ObservableObject {
 
   private func handle(_ outcome: DetectionOutcome, jpeg: Data) {
     isDetecting = false
-    lastDetection = outcome.detection
+    let observation = outcome.observation
+    lastObservation = observation
     lastLatency = outcome.latency
     lastError = nil
 
     let now = Date()
-    let decision = machine.observe(outcome.detection, at: now)
-    lastDecision = decision
+    let result = machine.observe(observation, at: now)
+    lastDecision = result.decision
 
     var framePath: String?
-    if CorvusConfig.captureCorpus || decision.isFired {
-      framePath = log.saveFrame(jpeg, tag: outcome.detection.itemID ?? "frame")
+    if CorvusConfig.captureCorpus || result.decision.isFired {
+      framePath = log.saveFrame(jpeg, tag: observation.held.first?.itemID ?? "frame")
     }
 
+    // Every frame, matched or not. A frame where nothing was held is not a
+    // non-event: it is the other half of every transition, and the only reason
+    // a trip can be replayed offline instead of walked again.
+    let best = observation.held.max { $0.confidence < $1.confidence }
     log.append(.init(
       kind: "detection",
       at: now,
       detector: outcome.detectorName,
       latencyMS: Int(outcome.latency * 1000),
-      holding: outcome.detection.holding,
-      itemID: outcome.detection.itemID,
-      productGuess: outcome.detection.productGuess,
-      confidence: outcome.detection.confidence,
-      decision: decision.label,
-      framePath: framePath))
+      holding: observation.isHolding,
+      itemID: best?.itemID,
+      categoryID: best?.categoryID,
+      productGuess: best?.productGuess,
+      examining: best?.examining,
+      facingCategoryID: observation.facing?.categoryID,
+      scene: observation.scene.rawValue,
+      heldCount: observation.held.count,
+      confidence: best?.confidence,
+      decision: result.decision.label,
+      framePath: framePath,
+      observation: observation))
 
-    if case .fired(let trigger) = decision {
-      triggers.insert(trigger, at: 0)
+    // Primitives that fired and lost. Recorded before the winner so the trace
+    // reads in the order the frame was judged, and kept at all because the
+    // moment a dwell lost to is what would have made its question a good one.
+    for loser in result.alsoFired {
       log.append(.init(
-        kind: "trigger",
-        at: trigger.firedAt,
-        itemID: trigger.item.id,
-        confidence: trigger.confidence,
-        framePath: framePath,
-        note: trigger.item.question))
-      NSLog("[Corvus] TRIGGER %@ (confidence %.2f, %d hits)",
-            trigger.item.id, trigger.confidence, trigger.hitCount)
+        kind: "trigger_suppressed",
+        at: loser.firedAt,
+        itemID: loser.subject.targetID,
+        confidence: loser.confidence,
+        primitive: loser.primitive.rawValue,
+        targetID: loser.target.id,
+        note: loser.subject.situation))
+    }
 
-      onTrigger?(trigger)
+    guard case .fired(let trigger) = result.decision else { return }
 
-      if let interceptor, CorvusConfig.interceptsEnabled {
-        // The machine stays locked for the whole intercept -- that is what
-        // stops a second pickup mid-question -- and is released on the way out
-        // whatever happened, including a thrown route failure.
-        isIntercepting = true
-        let study = self.study
-        // The frame that fired the trigger, so the interceptor can be concrete
-        // about the actual product rather than the category.
-        let frame = CorvusConfig.sendTriggerFrameToBrain ? jpeg : nil
-        Task { [weak self] in
-          let record = await interceptor.conduct(trigger, study: study, frame: frame)
-          guard let self else { return }
-          self.intercepts.insert(record, at: 0)
-          self.isIntercepting = false
-          self.machine.endIntercept(at: Date())
-        }
-      } else {
-        // No interceptor. Release the lock straight away so a test run can reach
-        // more than one pickup; the per-item cooldown still applies.
-        machine.endIntercept(at: now)
-      }
+    triggers.insert(trigger, at: 0)
+    log.append(.init(
+      kind: "trigger",
+      at: trigger.firedAt,
+      itemID: trigger.subject.targetID,
+      confidence: trigger.confidence,
+      primitive: trigger.primitive.rawValue,
+      targetID: trigger.target.id,
+      framePath: framePath,
+      note: trigger.subject.question))
+    NSLog("[Corvus] TRIGGER %@ on %@ (confidence %.2f, %d hits)",
+          trigger.primitive.rawValue, trigger.subject.targetID,
+          trigger.confidence, trigger.hitCount)
+
+    onTrigger?(trigger)
+
+    guard let interceptor, CorvusConfig.interceptsEnabled else {
+      // No interceptor. Release the lock straight away so a test run can reach
+      // more than one trigger; the per-target cooldown still applies.
+      machine.endIntercept(at: now)
+      return
+    }
+
+    // The machine stays locked for the whole intercept -- that is what stops a
+    // second pickup mid-question -- and is released on the way out whatever
+    // happened, including a thrown route failure.
+    isIntercepting = true
+    let study = self.study
+    // The frame that fired the trigger, so the interceptor can be concrete
+    // about the actual product rather than the category.
+    let frame = CorvusConfig.sendTriggerFrameToBrain ? jpeg : nil
+    Task { [weak self] in
+      let record = await interceptor.conduct(trigger, study: study, frame: frame)
+      guard let self else { return }
+      self.intercepts.insert(record, at: 0)
+      self.isIntercepting = false
+      self.machine.endIntercept(at: Date())
     }
   }
 
@@ -246,13 +276,13 @@ extension TriggerDecision {
   /// Short, stable string for logs and the debug panel.
   var label: String {
     switch self {
-    case .fired(let t): return "fired:\(t.item.id)"
-    case .notHolding: return "not_holding"
-    case .notOnWatchlist(let guess): return "off_list:\(guess ?? "unknown")"
-    case .belowConfidence(let c): return String(format: "low_confidence:%.2f", c)
-    case .buildingStreak(let id, let hits, let needed): return "streak:\(id):\(hits)/\(needed)"
-    case .itemCoolingDown(let id, _): return "item_cooldown:\(id)"
+    case .fired(let t): return "fired:\(t.primitive.rawValue):\(t.subject.targetID)"
+    case .building(let progress):
+      return progress.map(\.label).joined(separator: " ")
+    case .quiet(let guess): return guess.map { "quiet:off_list:\($0)" } ?? "quiet"
+    case .targetCoolingDown(let id, _): return "cooldown:\(id)"
     case .globallyLocked: return "locked"
+    case .budgetSpent(let used, let limit): return "budget_spent:\(used)/\(limit)"
     }
   }
 }

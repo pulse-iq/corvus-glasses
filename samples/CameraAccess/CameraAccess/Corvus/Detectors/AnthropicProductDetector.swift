@@ -24,7 +24,7 @@ struct AnthropicProductDetector: ProductDetector {
 
     let body: [String: Any] = [
       "model": model,
-      "max_tokens": 200,
+      "max_tokens": 500,
       "temperature": 0,
       "system": DetectionPrompt.system(for: study),
       "messages": [[
@@ -61,7 +61,7 @@ struct AnthropicProductDetector: ProductDetector {
     }
 
     return DetectionOutcome(
-      detection: try DetectionParser.parse(text, watchlist: study.items),
+      observation: try DetectionParser.parse(text, study: study),
       latency: latency,
       rawResponse: text,
       detectorName: name)

@@ -54,11 +54,12 @@ final class LiveKitInterceptor: Interceptor {
 
     var record = InterceptRecord(
       studyID: study.id,
-      itemID: trigger.item.id,
-      itemName: trigger.item.displayName,
+      itemID: trigger.subject.targetID,
+      itemName: trigger.subject.displayName,
       triggeredAt: trigger.firedAt,
       confidence: trigger.confidence)
     record.interceptor = name
+    record.primitive = trigger.primitive.rawValue
     record.brain = "realtime worker"
 
     guard let session else {
@@ -75,10 +76,10 @@ final class LiveKitInterceptor: Interceptor {
     session.pendingSessionContext = [
       "mode": "intercept",
       "studyId": study.id,
-      "itemId": trigger.item.id,
-      "itemName": trigger.item.displayName,
-      "openingQuestion": trigger.item.question,
-      "instructions": InterceptPrompt.realtime(study: study, item: trigger.item),
+      "itemId": trigger.subject.targetID,
+      "itemName": trigger.subject.displayName,
+      "openingQuestion": trigger.subject.question,
+      "instructions": InterceptPrompt.realtime(study: study, subject: trigger.subject),
       // The worker files the recording under this, so every intercept from one
       // run of the app lands beside the log directory it belongs to.
       "sessionId": log.sessionName,
