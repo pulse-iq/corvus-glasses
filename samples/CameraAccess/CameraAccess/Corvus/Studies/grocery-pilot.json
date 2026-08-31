@@ -1,0 +1,260 @@
+{
+  "id": "grocery-pilot",
+  "name": "Grocery pilot",
+  "notes": "The same items in a shop, plus the sections they sit in. Questions are still placeholders pending the real study design.",
+  "scene": {
+    "wearer": "a shopper in a grocery store",
+    "restingPlaces": "on a shelf, in a cart, or in a basket"
+  },
+  "items": [
+    {
+      "id": "olive_oil",
+      "displayName": "olive oil",
+      "aliases": [
+        "extra virgin olive oil",
+        "EVOO",
+        "bottle of cooking oil"
+      ],
+      "question": "What made you reach for that one?",
+      "categoryID": "cooking_oils",
+      "primitives": [
+        "holding"
+      ]
+    },
+    {
+      "id": "yogurt",
+      "displayName": "yogurt",
+      "aliases": [
+        "greek yogurt",
+        "yoghurt",
+        "yogurt cup",
+        "yogurt tub"
+      ],
+      "question": "Is that one you usually buy, or something new?",
+      "categoryID": "yogurt_shelf",
+      "primitives": [
+        "holding"
+      ]
+    },
+    {
+      "id": "milk",
+      "displayName": "milk",
+      "aliases": [
+        "milk jug",
+        "milk carton",
+        "whole milk",
+        "oat milk",
+        "almond milk"
+      ],
+      "question": "How do you pick which milk to get?",
+      "categoryID": "milk_case",
+      "primitives": [
+        "holding"
+      ]
+    },
+    {
+      "id": "lettuce",
+      "displayName": "lettuce",
+      "aliases": [
+        "head of lettuce",
+        "romaine",
+        "iceberg lettuce",
+        "bagged salad",
+        "salad greens"
+      ],
+      "question": "What are you planning to make with that?",
+      "categoryID": "salad_greens",
+      "primitives": [
+        "holding"
+      ]
+    },
+    {
+      "id": "carrots",
+      "displayName": "carrots",
+      "aliases": [
+        "baby carrots",
+        "bag of carrots",
+        "bunch of carrots"
+      ],
+      "question": "Do you buy those regularly?",
+      "primitives": [
+        "holding"
+      ]
+    },
+    {
+      "id": "eggs",
+      "displayName": "eggs",
+      "aliases": [
+        "egg carton",
+        "dozen eggs",
+        "carton of eggs"
+      ],
+      "question": "What made you choose that carton?",
+      "categoryID": "egg_cartons",
+      "primitives": [
+        "holding"
+      ]
+    },
+    {
+      "id": "spaghetti",
+      "displayName": "spaghetti noodles",
+      "aliases": [
+        "dried spaghetti",
+        "box of spaghetti",
+        "pasta box",
+        "noodles"
+      ],
+      "question": "How did you decide on that one?",
+      "categoryID": "pasta",
+      "primitives": [
+        "holding"
+      ]
+    },
+    {
+      "id": "sour_cream",
+      "displayName": "sour cream",
+      "aliases": [
+        "sour cream tub",
+        "sour cream container"
+      ],
+      "question": "What are you using that for?",
+      "primitives": [
+        "holding"
+      ]
+    }
+  ],
+  "triggerPolicy": {
+    "globalCooldown": 5,
+    "maxInterceptDuration": 120,
+    "maxInterceptsPerTrip": 500,
+    "primitives": {
+      "holding": {
+        "minConfidence": 0.6,
+        "consecutiveHits": 2,
+        "streakWindow": 6,
+        "cooldown": 20
+      },
+      "dwell": {
+        "cooldown": 20,
+        "streakWindow": 25
+      }
+    }
+  },
+  "researchGoal": "Understand what drives shelf-level decisions in store: which cues get attention, what alternatives are being weighed in the moment, and how much of the choice was decided before arriving.",
+  "categories": [
+    {
+      "id": "cooking_oils",
+      "displayName": "cooking oils",
+      "memberHints": [
+        "olive oil",
+        "avocado oil",
+        "vegetable oil",
+        "sunflower oil",
+        "sesame oil"
+      ],
+      "question": {
+        "default": "What made you go for that one?",
+        "dwell": "What are you after in an oil today?"
+      },
+      "primitives": [
+        "dwell",
+        "holding"
+      ]
+    },
+    {
+      "id": "yogurt_shelf",
+      "displayName": "yogurts",
+      "memberHints": [
+        "greek yogurt",
+        "skyr",
+        "drinking yogurt",
+        "kids' yogurt tubes",
+        "plant yogurt"
+      ],
+      "question": {
+        "default": "What made you pick that one?",
+        "dwell": "Anything here you're deciding between?"
+      },
+      "primitives": [
+        "dwell",
+        "holding"
+      ]
+    },
+    {
+      "id": "milk_case",
+      "displayName": "milk and milk alternatives",
+      "memberHints": [
+        "whole milk",
+        "skim milk",
+        "oat milk",
+        "almond milk",
+        "soy milk"
+      ],
+      "question": {
+        "default": "How do you pick which milk to get?",
+        "dwell": "What are you scanning for along here?"
+      },
+      "primitives": [
+        "dwell",
+        "holding"
+      ]
+    },
+    {
+      "id": "salad_greens",
+      "displayName": "bagged salads and greens",
+      "memberHints": [
+        "romaine",
+        "spinach",
+        "spring mix",
+        "kale",
+        "coleslaw",
+        "bagged salad"
+      ],
+      "question": {
+        "default": "What's this one for?",
+        "dwell": "What are you hoping to find here?"
+      },
+      "primitives": [
+        "dwell",
+        "holding"
+      ]
+    },
+    {
+      "id": "egg_cartons",
+      "displayName": "egg cartons",
+      "memberHints": [
+        "free range eggs",
+        "organic eggs",
+        "brown eggs",
+        "egg whites"
+      ],
+      "question": {
+        "default": "What made you go for that box?",
+        "dwell": "What are you looking for in a box of eggs?"
+      },
+      "primitives": [
+        "dwell",
+        "holding"
+      ]
+    },
+    {
+      "id": "pasta",
+      "displayName": "dried pasta",
+      "memberHints": [
+        "spaghetti",
+        "penne",
+        "fusilli",
+        "lasagne sheets",
+        "linguine"
+      ],
+      "question": {
+        "default": "What made you reach for that one?",
+        "dwell": "Anything you're deciding between here?"
+      },
+      "primitives": [
+        "dwell",
+        "holding"
+      ]
+    }
+  ]
+}
