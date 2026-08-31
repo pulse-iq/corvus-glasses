@@ -39,6 +39,11 @@ final class CorvusLog {
   private(set) var sessionDirectory: URL
   private var logURL: URL
 
+  /// The session folder's name on its own. Doubles as the prefix recordings are
+  /// filed under, so a directory pulled off the phone and the objects in the
+  /// bucket carry the same string and need no lookup table to line up.
+  var sessionName: String { sessionDirectory.lastPathComponent }
+
   private init() {
     let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
       .appendingPathComponent("corvus", isDirectory: true)

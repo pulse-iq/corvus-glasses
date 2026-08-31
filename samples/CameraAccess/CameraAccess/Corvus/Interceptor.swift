@@ -60,6 +60,16 @@ struct InterceptRecord: Codable, Identifiable, Equatable {
   var routeInput: String?
   var routeOutput: String?
   var routeMatchedGlasses: Bool?
+  /// What the room actually published as video, on the routes that publish
+  /// any. The audio route is already recorded here because a silently wrong
+  /// microphone once cost a session; video earns the same treatment for the
+  /// same reason, and a recording that came out black says so here rather
+  /// than only in the file.
+  var videoSource: String?
+  /// Object key of the room recording, on the routes that produce one. The
+  /// bucket is not addressable from the phone, so this is a pointer rather
+  /// than a path: it is how a record found in `intercepts/` names its video.
+  var recordingKey: String?
 
   var duration: TimeInterval? {
     endedAt.map { $0.timeIntervalSince(triggeredAt) }

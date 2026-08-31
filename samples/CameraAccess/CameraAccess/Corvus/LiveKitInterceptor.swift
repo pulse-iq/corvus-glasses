@@ -29,6 +29,10 @@ final class LiveKitInterceptor: Interceptor {
   /// mis-paired questions with the wrong answers, and a plausible-looking wrong
   /// transcript is worse in research data than a missing one.
   private var agentTranscript: [(isAgent: Bool, text: String)]?
+  /// Where the worker filed the room recording. Arrives on the same payload as
+  /// the transcript because that is the only channel back from the worker, and
+  /// there is no backend to ask afterwards.
+  private var recordingKey: String?
   private var cancelled = false
 
   init(session: LiveKitSession?) {
@@ -46,6 +50,7 @@ final class LiveKitInterceptor: Interceptor {
 
   func conduct(_ trigger: Trigger, study: Study, frame: Data?) async -> InterceptRecord {
     cancelled = false
+    recordingKey = nil
 
     var record = InterceptRecord(
       studyID: study.id,
@@ -74,6 +79,9 @@ final class LiveKitInterceptor: Interceptor {
       "itemName": trigger.item.displayName,
       "openingQuestion": trigger.item.question,
       "instructions": InterceptPrompt.realtime(study: study, item: trigger.item),
+      // The worker files the recording under this, so every intercept from one
+      // run of the app lands beside the log directory it belongs to.
+      "sessionId": log.sessionName,
     ]
     defer { session.pendingSessionContext = nil }
 
@@ -92,11 +100,18 @@ final class LiveKitInterceptor: Interceptor {
       record.abortReason = why
       return finish(record)
     }
+    // Read after the room is up, because publishing video is allowed to fail
+    // without failing the call: "none" here is the signature of an intercept
+    // that sounded perfect and recorded a black rectangle.
+    record.videoSource = session.localVideoTrack == nil
+      ? "none"
+      : (session.usingGlassesSource ? "glasses" : "phone")
 
     let outcome = await waitForCompletion(session)
     record.endedBecause = outcome.reason
     record.abortReason = outcome.abort
     record.turns = turns()
+    record.recordingKey = recordingKey
     // No transcript means the worker died before publishing one. Left empty
     // rather than approximated; abortReason says what happened.
     if agentTranscript == nil {
@@ -165,6 +180,10 @@ final class LiveKitInterceptor: Interceptor {
   private struct AgentTranscript: Decodable {
     struct Turn: Decodable { let role: String; let text: String }
     let turns: [Turn]
+    /// Absent whenever the worker had no credentials to record with, which is
+    /// a configuration state rather than a failure -- so it decodes as optional
+    /// and the intercept carries on without it.
+    let recordingKey: String?
   }
 
   private func absorbAgentTranscript(_ json: String) {
@@ -177,7 +196,9 @@ final class LiveKitInterceptor: Interceptor {
     agentTranscript = decoded.turns.map {
       (isAgent: $0.role == "assistant", text: $0.text)
     }
-    NSLog("[Corvus] agent transcript: %d item(s)", decoded.turns.count)
+    recordingKey = decoded.recordingKey
+    NSLog("[Corvus] agent transcript: %d item(s)%@", decoded.turns.count,
+          decoded.recordingKey.map { ", recording \($0)" } ?? "")
   }
 
   /// Pair each thing the interceptor said with the answer that followed it.

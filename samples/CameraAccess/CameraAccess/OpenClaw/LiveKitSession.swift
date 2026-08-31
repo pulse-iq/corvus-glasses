@@ -286,10 +286,17 @@ final class LiveKitSession: NSObject, ObservableObject {
           // Glasses frames arrive via pushGlassesFrame; publish a buffer
           // track with camera source so mute/freeze/agent logic is identical.
           let track = LocalVideoTrack.createBufferTrack(name: "glasses", source: .camera)
+          // Wired before the track starts, exactly as startPreview does it. A
+          // buffer track has no camera to open: until something pushes into
+          // its capturer it has no frames and no dimensions, so publishing
+          // first means publishing an empty track. That published as black --
+          // in the room and on the screen -- while DAT frames kept arriving
+          // and going nowhere, because the box was still pointing at the
+          // preview capturer this track replaces.
+          glassesCapturerBox.capturer = track.capturer as? BufferCapturer
           try await track.start()
           _ = try await room.localParticipant.publish(videoTrack: track)
           localVideoTrack = track
-          glassesCapturerBox.capturer = track.capturer as? BufferCapturer
         } else {
           // A video-call SDK defaults to the selfie camera; this app is a pair
           // of eyes on the world, so it opens on the back camera.
@@ -301,8 +308,18 @@ final class LiveKitSession: NSObject, ObservableObject {
             .first
         }
         attachGrabber(to: localVideoTrack)
+        CorvusLog.shared.append(.init(
+          kind: "video_published", at: Date(),
+          note: usingGlassesSource ? "glasses buffer track" : "phone back camera"))
       } catch {
         NSLog("[LiveKit] camera unavailable, voice-only: %@", error.localizedDescription)
+        // Recorded, not just printed: this branch is silent from the outside --
+        // the call carries on, the intercept sounds normal, and the only
+        // evidence is a room with no video in it.
+        CorvusLog.shared.append(.init(
+          kind: "video_publish_failed", at: Date(),
+          error: error.localizedDescription,
+          note: usingGlassesSource ? "glasses buffer track" : "phone back camera"))
       }
       state = .connected
       resetZoom()
