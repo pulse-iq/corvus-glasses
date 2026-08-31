@@ -1,22 +1,19 @@
-// Signing identity. Not secret, but per-developer: an explicit App ID belongs
-// to exactly one Apple team, so a clone carrying someone else's team and bundle
-// id cannot be signed by anyone but them.
+// Signing identity.
 //
-// Two ways to set yours. Either edit this file, or -- better -- put the same
-// lines in Signing.local.xcconfig, which is gitignored and included at the
-// bottom of this file. The local copy wins, and `git status` stays clean, so
-// your team id never rides along in a commit or fights a pull.
+// A Team ID belongs to an Apple Developer Program membership rather than to a
+// person, and an App ID is registered to the team, so everyone on this team
+// builds with the values below unchanged. Neither is a credential: signing
+// still requires a certificate this file cannot grant.
 
-// Xcode -> target -> Signing & Capabilities, or Apple Developer -> Membership.
-// Empty means Xcode asks you to pick a team before it will sign.
-DEVELOPMENT_TEAM =
+// Snag Ventures Inc.
+DEVELOPMENT_TEAM = WTYY8NK83J
 
-// Reachable by a second developer only after they change it: the original is
-// registered to the original team. Two things are keyed to this and move with
-// it -- the container path that `devicectl ... --domain-identifier` pulls
-// session output from, and the app's identity to the Meta AI app, which means
-// re-registering in Developer Mode. The corvusglasses:// URL scheme is set
-// separately in Info.plist and does not move.
 PRODUCT_BUNDLE_IDENTIFIER = com.meetcorvus.glasses
 
+// Building from outside the team means overriding both -- the bundle id
+// included, since an explicit App ID belongs to exactly one team. Put them in
+// Signing.local.xcconfig, which is gitignored and wins over everything above
+// because it is included last. Changing the bundle id also means re-registering
+// with the Meta AI app, and it changes the --domain-identifier used to pull
+// session data (see docs/output.md).
 #include? "Signing.local.xcconfig"

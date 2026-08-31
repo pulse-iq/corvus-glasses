@@ -8,8 +8,17 @@ CameraAccess/FastVLM/models/
 # Local secrets (API keys, tokens)
 CameraAccess/Secrets.swift
 
-# Xcode workspace metadata
-*.xcworkspace/
+# Xcode workspace metadata, except Package.resolved: it pins the exact Swift
+# package versions, so tracking it means everyone builds the same graph instead
+# of whatever satisfies the ranges in project.pbxproj that day. Re-including it
+# takes one negation per level, because git will not descend into a directory it
+# has already excluded.
+**/*.xcworkspace/*
+!**/*.xcworkspace/xcshareddata/
+**/*.xcworkspace/xcshareddata/*
+!**/*.xcworkspace/xcshareddata/swiftpm/
+**/*.xcworkspace/xcshareddata/swiftpm/*
+!**/*.xcworkspace/xcshareddata/swiftpm/Package.resolved
 
 # Node server
 server/node_modules/

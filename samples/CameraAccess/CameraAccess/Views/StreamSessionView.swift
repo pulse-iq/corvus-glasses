@@ -30,6 +30,9 @@ struct StreamSessionView: View {
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
   @AppStorage(IntelligenceEngine.defaultsKey) private var intelligenceRaw = IntelligenceEngine.gemini.rawValue
   @State private var glassesAutoStarted = false
+  /// Only signal available that DAT camera permission may have been granted.
+  /// It is granted in the Meta AI app, and nothing publishes it back here.
+  @Environment(\.scenePhase) private var scenePhase
   /// The call screen is the app's front door but carries no settings
   /// affordance, so on this fork the Watcher was unreachable from the UI.
   @State private var showSettings = false
@@ -188,6 +191,21 @@ struct StreamSessionView: View {
           await liveKit.start()
         }
       }
+    }
+    .onChange(of: scenePhase) { phase in
+      // Camera permission for the glasses is granted in the Meta AI app, in a
+      // second hand-off that lands after registration -- usually after the
+      // auto-start loop above has spent all four attempts and latched itself
+      // off. Nothing publishes that grant back, so returning to the foreground
+      // is the only evidence it may have happened.
+      //
+      // Clearing the latch alone is not enough: `.task` runs on appearance, not
+      // when the state it reads changes, so the retry has to be made here. That
+      // is also why toggling the capture source used to be the only cure -- it
+      // rebuilt the view as a side effect of changing the branch.
+      guard phase == .active, captureSource == .glasses, !viewModel.isStreaming else { return }
+      glassesAutoStarted = false
+      Task { await viewModel.handleStartStreaming() }
     }
     .onChange(of: captureSourceRaw) { newRaw in
       glassesAutoStarted = false
