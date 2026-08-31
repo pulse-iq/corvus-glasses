@@ -37,12 +37,15 @@ from livekit.agents import (
     Agent,
     AgentSession,
     JobContext,
-    RoomInputOptions,
     RunContext,
     WorkerOptions,
     cli,
     function_tool,
 )
+# RoomOptions replaces RoomInputOptions/RoomOutputOptions, but 1.7.1 has not
+# re-exported it at livekit.agents top level yet, so it comes from its own
+# module. Move it up to the block above once upstream hoists it.
+from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import google, openai
 
 from corvus_intercept import InterceptSession, brief_from_metadata
@@ -596,7 +599,15 @@ async def execute(ctx: RunContext[Userdata], task: str, attach_view: bool = Fals
     )
 
 
-def build_llm(engine: str):
+def build_llm(engine: str, *, silent_tools: bool = False):
+    """The realtime model for this session.
+
+    `silent_tools` declares the tools NON_BLOCKING, which is what lets Gemini
+    honour a tool result that asks for no reply instead of narrating it. Only
+    the intercept wants it -- its one tool is a hang-up whose result the model
+    is told not to speak -- and it is off for the assistant, whose tools return
+    answers it is supposed to say out loud.
+    """
     if engine == "openai":
         if not os.environ.get("OPENAI_API_KEY"):
             logger.warning("openai engine requested but OPENAI_API_KEY unset; using gemini")
@@ -611,6 +622,11 @@ def build_llm(engine: str):
         # drive the clients' live captions.
         input_audio_transcription=genai_types.AudioTranscriptionConfig(),
         output_audio_transcription=genai_types.AudioTranscriptionConfig(),
+        **(
+            {"tool_behavior": genai_types.Behavior.NON_BLOCKING}
+            if silent_tools
+            else {}
+        ),
     )
 
 
@@ -807,7 +823,7 @@ async def entrypoint(ctx: JobContext):
     show_card = function_tool(_show_card, name="show_card")
 
     session = AgentSession(
-        llm=build_llm(engine),
+        llm=build_llm(engine, silent_tools=intercept is not None),
         userdata=Userdata(user_id=user_id, frames=frames, tracer=tracer, room=ctx.room),
     )
 
@@ -837,9 +853,9 @@ async def entrypoint(ctx: JobContext):
             else [execute, quick_search, show_card, save_note, recall_notes, delete_note],
         ),
         room=ctx.room,
-        # Video is opt-in (RoomInputOptions.video_enabled defaults to False);
-        # without this the model gets no frames and hallucinates a scene when
-        # asked what it sees.
+        # Video is opt-in (RoomOptions.video_input defaults to False); without
+        # this the model gets no frames and hallucinates a scene when asked what
+        # it sees.
         #
         # Off for intercepts: streaming frames into a Live session fills its
         # context in well under a minute, and the session then dies mid-answer
@@ -847,7 +863,14 @@ async def entrypoint(ctx: JobContext):
         # interceptor simply going silent. The watcher has already identified the
         # product and the brief names it, so the interceptor gains little from
         # watching and loses the conversation.
-        room_input_options=RoomInputOptions(video_enabled=intercept is None),
+        room_options=RoomOptions(video_input=intercept is None),
+        # Intercepts record themselves to S3 via egress, so the framework's own
+        # session recorder is a second, redundant capture of the same audio --
+        # and the one that logs "recorder dropped audio" every run, tallying the
+        # ~40ms its timeline could not place. Audio off, everything else on: the
+        # traces, logs and transcript still reach LiveKit Cloud observability.
+        # The assistant path keeps it, having no egress of its own.
+        record={"audio": False} if intercept else True,
     )
 
     if intercept:

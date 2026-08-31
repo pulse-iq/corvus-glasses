@@ -87,13 +87,17 @@ class InterceptSession:
         over = self.over
 
         @function_tool
-        async def end_intercept(ctx: RunContext) -> str:
+        async def end_intercept(ctx: RunContext) -> None:
             """Call this immediately after your closing line, once the intercept is
             over. It hangs up. Do not call it before you have said your closing
             line, and do not say anything after calling it."""
             logger.info("end_intercept called")
             over.set()
-            return "Intercept ended."
+            # No return value on purpose: a tool that returns nothing is recorded
+            # with reply_required=False, which is the truth here -- the model has
+            # already said its closing line and must not answer the hang-up. It
+            # is honoured only because the intercept's model is built with
+            # NON_BLOCKING tools; see build_llm(silent_tools=True) in main.py.
 
         return [end_intercept]
 
@@ -251,6 +255,17 @@ class InterceptSession:
 
         await self._publish_transcript(ctx)
         await self.stop_egress()
+
+        # Close the session before the room goes away. Deleting the room out
+        # from under a live session pulls the transport while the realtime
+        # write loop and the recorder are still flushing, and each one logs its
+        # own failure -- a wall of "room session transport is closed" and
+        # "recorder dropped audio" on every single intercept that ended
+        # perfectly well. Closing first lets them finish and shut down quietly.
+        try:
+            await session.aclose()
+        except Exception:
+            logger.exception("session close failed: room=%s", ctx.room.name)
 
         # delete_room, not room.disconnect(): disconnecting only removes this
         # worker and leaves the room alive with the phone still in it. Ordering
