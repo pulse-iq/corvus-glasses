@@ -1,14 +1,14 @@
 # The realtime interceptor
 
-The default `conversational` interceptor needs nothing but a model key: it
-records an answer, uploads it, and gets the next question back in one round
-trip, at roughly four seconds a turn.
+`liveKit` is the default interceptor. It trades the simplicity of the turn-based
+modes -- which need nothing but a model key -- for sub-second turnaround: the
+phone publishes its microphone into a room, a deployed worker bridges that room
+to a realtime voice model, and the conversation happens at conversational
+latency.
 
-`liveKit` trades that simplicity for sub-second turnaround. The phone publishes
-its microphone into a room, a deployed worker bridges the room to a realtime
-voice model, and the conversation happens at conversational latency. It is the
-only interceptor that needs anything outside the phone, and the only one that
-produces video.
+It is the only interceptor that needs anything outside the phone, and the only
+one that produces video. Without a token endpoint and its token, switch the
+style to `conversational`, which needs no server at all.
 
 ```
 phone ──POST /livekit-token──> token endpoint

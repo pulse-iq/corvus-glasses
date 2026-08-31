@@ -118,9 +118,10 @@ pointer rather than a path: the bucket is not addressable from the device.
 Within a session, sorting by name sorts by time.
 
 Nothing else records video. The watcher's frames are 768px stills at ~1fps and
-mostly discarded, and the other two interceptors never open a room. Selecting
-`conversational` — still the default — records no video at all, and the first
-symptom of expecting otherwise is an empty bucket rather than an error.
+mostly discarded, and the other two interceptors never open a room. Switching
+the style to `conversational` or `scripted` therefore records no video at all,
+and the first symptom of expecting otherwise is an empty bucket rather than an
+error.
 
 **The pickup itself is not in any recording.** The moment that triggered the
 intercept happened seconds before the room existed. Capturing it would mean

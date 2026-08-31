@@ -103,7 +103,7 @@ enum CorvusConfig {
     get {
       guard let raw = UserDefaults.standard.string(forKey: "corvus.interceptor"),
             let kind = InterceptorKind(rawValue: raw)
-      else { return .conversational }
+      else { return .liveKit }
       return kind
     }
     set { UserDefaults.standard.set(newValue.rawValue, forKey: "corvus.interceptor") }

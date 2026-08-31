@@ -112,9 +112,11 @@ Batch the whole ask into one question:
 
 1. **`GOOGLE_API_KEY`** -- required, if the survey did not find it. From
    <https://aistudio.google.com/apikey>.
-2. **`CORVUS_GLASSES_TOKEN`** -- optional, skip by default. Only the `liveKit`
-   interceptor needs it; the default `conversational` mode needs no server.
-   Delivered out of band, never committed.
+2. **`CORVUS_GLASSES_TOKEN`** -- required for the default `liveKit`
+   interceptor, which is what a fresh install runs. Delivered out of band,
+   never committed. If the user does not have one, say so plainly and tell them
+   to switch Settings -> Corvus -> Intercepts -> Style to Conversational, which
+   needs no server.
 
 Ask about signing **only if the Phase 1 team check did not match**. In that case
 the user is building from outside the team and needs both their own team id
@@ -252,11 +254,11 @@ is the part that looks broken and is not.
    delay is normal — registration and permission are two separate round trips in
    the DAT integration lifecycle. Do not tap anything in Corvus while waiting.
    Approve the camera grant.
-7. **Toggle the camera source off and back on** — set it to `iPhone Camera`,
-   then back to `Glasses`. The app does not pick up the new permission on its
-   own, and without this the glasses feed stays dead. This is a workaround, not
-   a fix: the permission grant should invalidate the source and does not. After
-   it should ask for microphone permissions.
+7. **Wait for the feed, and allow the microphone when asked.** On a fresh
+   install the first frame takes roughly half a minute to arrive — that is DAT
+   coming up, not a fault. Measured from the session log: ~31-36s on a fresh
+   install, ~13s when the camera grant was already in place. Nothing needs
+   tapping while you wait.
 
 Then confirm it works: pick up something on the watchlist and check that the
 watcher fires. `grocery-pilot` watches for olive oil, yogurt and six others —
@@ -273,7 +275,7 @@ than waiting for an error.
 | Watcher runs, never fires, studies present | `streakWindow` too short for the detector's latency; see `docs/architecture.md#tuning` |
 | Signing error at build | `Signing.local.xcconfig` missing or wrong; bundle id belongs to another team |
 | App installs, glasses never connect | Developer Mode off, or another app holds the single registration slot |
-| Glasses registered and permitted, feed still dead | The camera source did not pick up the grant — toggle it to `iPhone Camera` and back to `Glasses` (Phase 4, step 7) |
+| Screen dark but `events.jsonl` still logging `detection` rows | Frames are arriving and only the display is broken — the two ride different paths (`onAnalysisFrame` feeds the watcher, `onDecodedFrame` feeds the screen). Look at the preview track and whether `glassesCapturerBox` got wired, not at the stream |
 | Stuck after approving the unverified app | The second Meta AI hand-off is delayed by a few seconds; wait rather than tapping |
 | Realtime says no worker joined | Wrong or missing `cloudGatewayToken` — Settings' gateway status line distinguishes a bad token from an unreachable server |
 | Realtime works, bucket empty | Interceptor style is still `conversational`; only realtime records |

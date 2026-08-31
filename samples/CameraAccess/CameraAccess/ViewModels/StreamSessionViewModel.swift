@@ -304,6 +304,25 @@ class StreamSessionViewModel: ObservableObject {
     await streamSession?.start()
   }
 
+  /// Starts only if the glasses camera grant is already visible, and reports
+  /// whether it did.
+  ///
+  /// Checks without ever requesting, which is the whole point: `requestPermission`
+  /// deeplinks to the Meta AI app, and the caller for this is the return journey
+  /// from exactly that trip. Asking again from here would bounce the user
+  /// straight back out. The grant also lands asynchronously -- it is routinely
+  /// still invisible the instant the app foregrounds -- so this is built to be
+  /// called repeatedly until it takes.
+  func resumeIfPermitted() async -> Bool {
+    guard let wearables else { return false }
+    guard let status = try? await wearables.checkPermissionStatus(Permission.camera),
+          status == .granted
+    else { return false }
+    glassesIssue = nil
+    await startSession()
+    return true
+  }
+
   private func showError(_ message: String) {
     errorMessage = message
     showError = true

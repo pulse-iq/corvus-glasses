@@ -98,8 +98,8 @@ Settings → Corvus → Intercepts → Style.
 | Mode | Model in the loop | Server needed | Turnaround |
 |---|---|---|---|
 | `scripted` | none — fixed questions from the study file | none | n/a |
-| `conversational` (default) | one call per turn | none | ~4.0s |
-| `liveKit` | a realtime voice model | token endpoint + deployed agent | sub-second |
+| `conversational` | one call per turn | none | ~4.0s |
+| `liveKit` (default) | a realtime voice model | token endpoint + deployed agent | sub-second |
 
 **Scripted** is the deterministic control. Identical wording for every
 participant is sometimes exactly what a study wants.

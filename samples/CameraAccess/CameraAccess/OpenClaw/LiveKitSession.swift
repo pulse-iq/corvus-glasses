@@ -198,6 +198,20 @@ final class LiveKitSession: NSObject, ObservableObject {
   /// Local, unpublished camera so the screen shows the world before and
   /// between calls. Handed off to the room on connect (one owner at a time).
   func startPreview() async {
+    // A preview built for the other capture source is worse than no preview at
+    // all. The glasses render through `glassesCapturerBox`, which only a buffer
+    // track wires up; a camera track leaves it nil, so DAT frames arrive via
+    // pushGlassesFrame and are dropped on the floor. The screen stays black
+    // while the watcher, which rides `onAnalysisFrame` instead, keeps detecting
+    // perfectly -- so the stream looks dead and is not.
+    //
+    // This happens on the ordinary path: the preview opens on the phone camera
+    // before anyone visits Settings, and `stop()` calls straight back here
+    // without clearing `previewTrack`, so the guard below returns early forever
+    // and the glasses track is never built.
+    if previewTrack != nil, (SettingsManager.shared.captureSource == .glasses) != usingGlassesSource {
+      await stopPreview()
+    }
     guard state == .disconnected || isFailed, previewTrack == nil else { return }
     let track: LocalVideoTrack
     // Otherwise only set in start(); without it a call-free preview renders
@@ -267,6 +281,12 @@ final class LiveKitSession: NSObject, ObservableObject {
 
     usingGlassesSource = SettingsManager.shared.captureSource == .glasses
 
+    // Named so a failure says which call threw. These three fail in completely
+    // different places -- the token endpoint, the room, the microphone -- and
+    // collapse into one `error.localizedDescription` that names none of them.
+    // "Invalid state(connectionState is .disconnected)" in particular reads the
+    // same whether the room never connected or dropped straight after.
+    var stage = "ticket"
     do {
       let ticket = try await fetchTicket()
       // Before connect, not after: the worker is dispatched at room creation
@@ -277,7 +297,9 @@ final class LiveKitSession: NSObject, ObservableObject {
       await registerCaptionHandler()
       await registerCardHandler()
       await registerTranscriptHandler()
+      stage = "connect"
       try await room.connect(url: ticket.url, token: ticket.token)
+      stage = "microphone"
       try await room.localParticipant.setMicrophone(enabled: true)
       // Camera failure (simulator, permission denied) degrades to voice-only
       // rather than killing the call.
@@ -325,7 +347,16 @@ final class LiveKitSession: NSObject, ObservableObject {
       resetZoom()
       refreshAgentStatus()
     } catch {
-      state = .failed(error.localizedDescription)
+      // The stage, not just the message: an intercept that aborts here leaves
+      // no turns and no room, so this line is the only account of what went
+      // wrong. The room's own view of its connection is recorded too, because
+      // "disconnected" at the microphone step means it dropped after connect
+      // returned, which is a different bug from never connecting at all.
+      CorvusLog.shared.append(.init(
+        kind: "livekit_connect_failed", at: Date(),
+        error: error.localizedDescription,
+        note: "stage=\(stage) connectionState=\(room.connectionState)"))
+      state = .failed("\(stage): \(error.localizedDescription)")
       agentStatus = .none
       await room.disconnect()
       // Even a failed call leaves the user with eyes.

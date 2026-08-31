@@ -33,6 +33,7 @@ struct StreamSessionView: View {
   /// Only signal available that DAT camera permission may have been granted.
   /// It is granted in the Meta AI app, and nothing publishes it back here.
   @Environment(\.scenePhase) private var scenePhase
+  @State private var glassesResumeTask: Task<Void, Never>?
   /// The call screen is the app's front door but carries no settings
   /// affordance, so on this fork the Watcher was unreachable from the UI.
   @State private var showSettings = false
@@ -41,7 +42,7 @@ struct StreamSessionView: View {
   /// Observed here rather than only read at launch: Settings writes this key,
   /// and the coordinator builds its interceptor once in init, so without a
   /// watcher on it the picker silently did nothing until the next relaunch.
-  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.conversational.rawValue
+  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.liveKit.rawValue
 
   private var captureSource: CaptureSource {
     CaptureSource(rawValue: captureSourceRaw) ?? .iPhoneCamera
@@ -86,6 +87,9 @@ struct StreamSessionView: View {
             .task {
               guard !glassesAutoStarted else { return }
               glassesAutoStarted = true
+              // Restored to the cadence this shipped with. Two attempts at
+              // retuning it moved the time-to-first-frame from 36s to 31s --
+              // noise -- because the wait was never this loop's fault.
               for _ in 0..<4 {
                 await viewModel.handleStartStreaming()
                 if viewModel.isStreaming { break }
@@ -163,6 +167,7 @@ struct StreamSessionView: View {
     }
     .onDisappear {
       watcher.stop()
+      glassesResumeTask?.cancel()
     }
     .onChange(of: viewModel.isStreaming) { streaming in
       // Glasses mode: the call rides the DAT stream's lifecycle -- frames
@@ -199,20 +204,40 @@ struct StreamSessionView: View {
       // off. Nothing publishes that grant back, so returning to the foreground
       // is the only evidence it may have happened.
       //
-      // Clearing the latch alone is not enough: `.task` runs on appearance, not
-      // when the state it reads changes, so the retry has to be made here. That
-      // is also why toggling the capture source used to be the only cure -- it
-      // rebuilt the view as a side effect of changing the branch.
+      // Poll rather than check once. The grant is routinely still invisible to
+      // `checkPermissionStatus` at the moment the app foregrounds, so a single
+      // attempt on return fails and nothing retries -- which is precisely what
+      // made toggling the capture source look like the only cure, and why it
+      // had to be repeated: each toggle rebuilt the view and bought another run
+      // of the retry loop above.
+      //
+      // `resumeIfPermitted` checks without requesting. Calling the requesting
+      // path from here would deeplink back out to the Meta AI app the user has
+      // just come from.
       guard phase == .active, captureSource == .glasses, !viewModel.isStreaming else { return }
       glassesAutoStarted = false
-      Task { await viewModel.handleStartStreaming() }
+      glassesResumeTask?.cancel()
+      glassesResumeTask = Task {
+        for _ in 0..<10 {
+          if Task.isCancelled || viewModel.isStreaming || captureSource != .glasses { return }
+          if await viewModel.resumeIfPermitted() { return }
+          try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+      }
     }
     .onChange(of: captureSourceRaw) { newRaw in
       glassesAutoStarted = false
       Task {
         if CaptureSource(rawValue: newRaw) == .iPhoneCamera {
           if viewModel.isStreaming { await viewModel.stopSession() }
-          await liveKit.start()
+          // Guarded like the other two start sites. Unguarded, switching to the
+          // phone camera opened upstream's assistant room -- a room with no
+          // intercept brief, so the worker joins as the ordinary assistant and
+          // starts talking. That is a second voice over the top of the
+          // interceptor, and it also strands the worker: with no brief the
+          // tracer pump runs, and without GATEWAY_URL it raises every five
+          // seconds and holds the process open past teardown.
+          if CorvusConfig.useLiveKitCall { await liveKit.start() } else { await liveKit.startPreview() }
         } else {
           await liveKit.stop()
         }

@@ -55,7 +55,7 @@ struct SettingsView: View {
   @AppStorage("corvus.interceptsEnabled") private var interceptsEnabled = true
   @AppStorage("corvus.transcribeAnswers") private var transcribeAnswers = true
   @AppStorage("corvus.audioRouteMode") private var audioRouteRaw = AudioRouteMode.glassesBothWays.rawValue
-  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.conversational.rawValue
+  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.liveKit.rawValue
 
   var body: some View {
     NavigationView {
