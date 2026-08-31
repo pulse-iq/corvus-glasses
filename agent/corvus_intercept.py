@@ -38,7 +38,7 @@ CEILING_SECONDS = float(os.environ.get("CORVUS_INTERCEPT_CEILING_SECONDS", "180"
 
 # Glasses recordings live under one prefix in a bucket shared with pulseiq's
 # interview recordings.
-EGRESS_ROOT = "glasses"
+EGRESS_ROOT = "hack"
 # Characters allowed in the session folder name. It arrives from the phone and
 # becomes part of an object key, so it is filtered rather than trusted.
 SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]")
