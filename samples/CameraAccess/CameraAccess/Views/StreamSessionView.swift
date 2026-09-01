@@ -149,6 +149,14 @@ struct StreamSessionView: View {
         FrameHeartbeat.shared.tick()
         watcher?.submit(image: image)
       }
+      // Phone mode: the back camera belongs to the LiveKit session, which is
+      // the only thing that sees its frames. Without this tap the watcher sat
+      // at 0/0 -- started, and never handed a single frame.
+      liveKit.onPhoneFrame = { [weak watcher] pixelBuffer, orientation in
+        Task { @MainActor in
+          watcher?.submit(pixelBuffer: pixelBuffer, orientation: orientation)
+        }
+      }
       // Realtime intercepts run through this screen's room.
       watcher.attach(liveKit: liveKit)
       if watchHere { watcher.start() }

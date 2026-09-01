@@ -124,9 +124,27 @@ final class LiveKitSession: NSObject, ObservableObject {
   private let frameGrabber = LatestFrameGrabber()
   private var grabberTrack: LocalVideoTrack?
 
+  /// Every frame the phone camera captures, with the rotation that makes it
+  /// upright. Called on the capture thread.
+  ///
+  /// The watcher rides this in phone mode. In glasses mode it rides the DAT
+  /// decoder instead, and the local track here is the buffer track fed by
+  /// `pushGlassesFrame` -- forwarding that too would hand the watcher every
+  /// glasses frame twice, so this stays nil while the glasses are the source.
+  var onPhoneFrame: ((CVPixelBuffer, CGImagePropertyOrientation) -> Void)? {
+    didSet { syncFrameForwarding() }
+  }
+
+  private func syncFrameForwarding() {
+    frameGrabber.onFrame = usingGlassesSource ? nil : onPhoneFrame
+  }
+
   private func attachGrabber(to track: LocalVideoTrack?) {
     if let old = grabberTrack { old.remove(videoRenderer: frameGrabber) }
     grabberTrack = track
+    // Both callers decide `usingGlassesSource` before building the track, so
+    // this is the moment the forwarding decision is known.
+    syncFrameForwarding()
     if let track { track.add(videoRenderer: frameGrabber) }
   }
 
@@ -565,6 +583,14 @@ extension LiveKitSession: RoomDelegate {
 final class LatestFrameGrabber: VideoRenderer {
   private let lock = NSLock()
   private var latestFrame: VideoFrame?
+  private var _onFrame: ((CVPixelBuffer, CGImagePropertyOrientation) -> Void)?
+
+  /// Live tap on the track, for the watcher. Set from the main actor, read on
+  /// the capture thread, hence the lock.
+  var onFrame: ((CVPixelBuffer, CGImagePropertyOrientation) -> Void)? {
+    get { lock.lock(); defer { lock.unlock() }; return _onFrame }
+    set { lock.lock(); _onFrame = newValue; lock.unlock() }
+  }
 
   var isAdaptiveStreamEnabled: Bool { false }
   var adaptiveStreamSize: CGSize { .zero }
@@ -574,7 +600,21 @@ final class LatestFrameGrabber: VideoRenderer {
   func render(frame: VideoFrame) {
     lock.lock()
     latestFrame = frame
+    let onFrame = _onFrame
     lock.unlock()
+    // Camera frames wrap a CVPixelBuffer already, so this is an unwrap, not a
+    // conversion. The watcher's own sampler throttles downstream.
+    guard let onFrame, let pixelBuffer = frame.toCVPixelBuffer() else { return }
+    onFrame(pixelBuffer, Self.orientation(for: frame.rotation))
+  }
+
+  static func orientation(for rotation: VideoRotation) -> CGImagePropertyOrientation {
+    switch rotation {
+    case ._90: return .right
+    case ._180: return .down
+    case ._270: return .left
+    default: return .up
+    }
   }
 
   func render(frame: VideoFrame, captureDevice: AVCaptureDevice?, captureOptions: VideoCaptureOptions?) {
@@ -586,16 +626,11 @@ final class LatestFrameGrabber: VideoRenderer {
     let frame = latestFrame
     lock.unlock()
     guard let frame, let pixelBuffer = frame.toCVPixelBuffer() else { return nil }
-    var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
     // The sensor delivers landscape buffers; renderers apply the frame's
     // rotation tag at display time. Converting raw pixels skips that step, so
     // apply it here or every portrait pin comes out sideways.
-    switch frame.rotation {
-    case ._90: ciImage = ciImage.oriented(.right)
-    case ._180: ciImage = ciImage.oriented(.down)
-    case ._270: ciImage = ciImage.oriented(.left)
-    default: break
-    }
+    let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+      .oriented(Self.orientation(for: frame.rotation))
     let context = CIContext()
     guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
     return UIImage(cgImage: cgImage)
