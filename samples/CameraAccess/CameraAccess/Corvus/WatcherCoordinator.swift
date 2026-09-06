@@ -1,5 +1,6 @@
 import Combine
 import CoreVideo
+import ImageIO
 import Foundation
 import UIKit
 
@@ -135,10 +136,10 @@ final class WatcherCoordinator: ObservableObject {
 
   // MARK: - Frame intake
 
-  func submit(pixelBuffer: CVPixelBuffer) {
+  func submit(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .up) {
     framesSeen += 1
     guard isRunning, missionReady, !isDetecting, sampler.shouldSample() else { return }
-    guard let jpeg = sampler.jpeg(from: pixelBuffer) else { return }
+    guard let jpeg = sampler.jpeg(from: pixelBuffer, orientation: orientation) else { return }
     analyse(jpeg)
   }
 
