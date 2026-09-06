@@ -14,7 +14,7 @@ Move room connection, voice-agent preparation, and recording startup out of the 
 - Button-only Start Mission and End Mission. No spoken activation.
 - One room and a prepared voice agent for the mission, with recovery when necessary.
 - Record the entire active mission: camera video, shopper/ambient audio, and agent speech.
-- Hard maximum mission duration of 15 minutes (900 seconds).
+- Hard maximum mission duration of 15 minutes (900 seconds), enforced as a background failsafe. Do not display remaining time or a one-minute warning.
 - Preserve existing product detection, study prompts, interview limits, and cooldown rules.
 - Keep individual interview transcripts and link them to offsets in the mission recording.
 - No application code or deployment until the planning phase is complete and implementation is authorized.
@@ -45,7 +45,7 @@ Enable interviews after the greeting finishes. Do not queue detections from setu
 
 ### Shopping and Interviewing
 
-Show a recording indicator, remaining mission time, current state, and a persistent End Mission button. Keep the room, published microphone/video, and voice-agent infrastructure alive.
+Show a recording indicator, current state, and a persistent End Mission button. Do not render a countdown or remaining mission time. Keep the room, published microphone/video, and voice-agent infrastructure alive.
 
 Between interviews, disable audio ingestion into the voice model while continuing microphone publication to the room recorder. Prevent unsolicited model speech and avoid accumulating ambient conversation in model context. Continue the existing local watcher pipeline. Do not stream mission video into the voice model; current code already avoids that because of context exhaustion.
 
@@ -55,9 +55,9 @@ For an eligible trigger, send an interview brief over the established room. The 
 
 ### End Mission and time limit
 
-At 14 minutes, display a one-minute warning without speaking over an interview. At 15 minutes, stop detection and interview audio even mid-interview and mark any interrupted interview with reason `mission_time_limit`. No grace period extends active capture.
+The 15-minute limit is a background failsafe to prevent an excessively long mission. Do not display or speak a one-minute warning. At 15 minutes, stop detection and interview audio even mid-interview and mark any interrupted interview with reason `mission_time_limit`. No grace period extends active capture.
 
-The worker enforces the authoritative deadline; the phone independently updates the countdown and stops local capture at the deadline. Reconnects do not reset it. This bounds capture even if the app is suspended or the network fails.
+The worker enforces the authoritative deadline; the phone independently tracks that deadline internally and stops local capture when it is reached. Reconnects do not reset it. This bounds capture even if the app is suspended or the network fails.
 
 End Mission works during setup, welcome, shopping, an interview, and reconnecting. Immediately stop detection, local media capture/publication, and further agent speech. Invalidate outstanding start/reconnect work so a late completion cannot revive the mission. Preserve partial interview data with an explicit end reason.
 
@@ -130,7 +130,7 @@ Before implementation, identify the deployed token service and its source, verif
 1. Verify deployment ownership and SDK/model behavior; specify the mission protocol, persistence, recording lifecycle, and timeout policy.
 2. Build mission state ownership and cancellation semantics, including the shared 900-second deadline.
 3. Implement the persistent worker, quiet input gating, recording lifecycle, and successive interview handling.
-4. Adapt the existing iOS interceptor/watcher and add Start Mission, recording/countdown state, and End Mission.
+4. Adapt the existing iOS interceptor/watcher and add Start Mission, recording/mission state, and End Mission, without a visible timer or advance time-limit warning.
 5. Implement recovery, recording-status persistence, per-interview offsets, and terminal cleanup.
 6. Validate on device and document setup, output format, and limitations.
 
@@ -144,6 +144,7 @@ This sequence describes deliverables, not authorization to implement them. A det
 - Quiet periods produce no unsolicited speech; ambient audio remains in the recording but outside interview transcripts/model input.
 - Each interview has the correct product brief, independent transcript, completion reason, and verified recording offsets.
 - A full 15-minute hardware run includes long quiet periods and multiple interviews with the phone locked.
+- No remaining mission time or countdown is rendered, and no one-minute warning is displayed or spoken.
 - At the hard deadline, capture and agent speech stop even during an interview or network outage; recovery cannot extend the deadline.
 - End Mission during every state releases capture and cancels pending work without reopening a room.
 - Duplicate, delayed, and lost control messages cannot cause overlapping/repeated interviews or lost acknowledged results.
