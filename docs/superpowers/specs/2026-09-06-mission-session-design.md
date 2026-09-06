@@ -2,7 +2,9 @@
 
 Date: 2026-09-06
 Branch: `codex/mission-session-prototype`
-Status: Agreed design captured for review; application implementation has not started.
+Status: Design approved, including the invisible failsafe correction; application implementation has not started.
+
+Implementation plan: `docs/superpowers/plans/2026-09-06-mission-session.md` (external service integration prerequisite remains open).
 
 ## Objective
 
@@ -51,7 +53,7 @@ Between interviews, disable audio ingestion into the voice model while continuin
 
 For an eligible trigger, send an interview brief over the established room. The phone continues composing study instructions. Enable agent conversation input and begin the interview after acceptance. Permit only one interview at a time.
 
-`end_intercept` ends the interview, publishes its result, disables conversational input, and returns to Shopping. It does not stop recording, disconnect the worker, or delete the room. Reset interview-specific transcript, model context, callbacks, and timers before the next interview without reintroducing routine model startup on the trigger path. The precise context-reset mechanism must be verified against the deployed model and SDK during implementation planning.
+`end_intercept` ends the interview, publishes its result, disables conversational input, and returns to Shopping. It does not stop recording, disconnect the worker, or delete the room. Reset interview-specific transcript, model context, callbacks, and timers before the next interview without reintroducing routine model startup on the trigger path. Planning refinement: prepare a fresh voice session after the welcome and each interview while readiness is gated and cooldown runs, retaining the same room and recorder. Current upstream Gemini integration cannot reliably remove server-side conversation history in place. Verify clean-session lifecycle, brief delivery, and provider resumption against the deployed model and SDK before implementation; a warm room alone is insufficient.
 
 ### End Mission and time limit
 
