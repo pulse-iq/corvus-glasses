@@ -10,6 +10,7 @@ struct LiveKitStreamView: View {
   /// Title + caption shown while a glasses call has no frames yet -- the
   /// app's own voice for glasses-state conditions (never alert dialogs).
   var glassesPlaceholder: (title: String, caption: String)? = nil
+  var missionControls = false
   @State private var showSettings = false
 
   var body: some View {
@@ -25,7 +26,7 @@ struct LiveKitStreamView: View {
               .onEnded { _ in session.beginZoomGesture() }
           )
           .onLongPressGesture(minimumDuration: 0.4) {
-            Task { await session.toggleFreeze() }
+            if !missionControls { Task { await session.toggleFreeze() } }
           }
           .overlay(alignment: .topLeading) {
             if session.zoomFactor > 1.05 && !session.usingGlassesSource {
@@ -98,7 +99,7 @@ struct LiveKitStreamView: View {
       // be an empty room if the worker never dispatches. The pill makes the
       // difference visible -- stuck on "Waiting for agent" means the backend
       // is down, not that the model is ignoring you.
-      if session.state == .connected && session.agentStatus != .none {
+      if !missionControls && session.state == .connected && session.agentStatus != .none {
         VStack {
           AgentStatusPill(status: session.agentStatus)
             .padding(.top, 60)
@@ -141,7 +142,7 @@ struct LiveKitStreamView: View {
         .transition(.opacity)
       }
 
-      VStack {
+      if !missionControls { VStack {
         HStack {
           Spacer()
           Button { showSettings = true } label: {
@@ -164,7 +165,7 @@ struct LiveKitStreamView: View {
           }
         }
         .padding(.bottom, 24)
-      }
+      } }
     }
     .sheet(isPresented: $showSettings) { SettingsView() }
     // Haptics are opt-in on iOS; a voice call that connects silently under a

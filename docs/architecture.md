@@ -20,6 +20,28 @@ worth interrupting*. The **intercept** takes that decision and conducts the
 conversation. They meet at a single value, `Trigger`, and nothing downstream of
 it needs to know which primitive fired or which model saw it.
 
+## Mission ownership
+
+In the participant flow, `MissionCoordinator` owns the room and capture lifetime.
+Start Mission snapshots the study, camera source, and voice engine. The worker
+starts one recording, speaks a welcome, then waits for the existing watcher to
+send interview briefs through that room. Individual interviews keep the same
+study prompts and trigger policy, but `end_intercept` now returns the mission to
+quiet shopping rather than deleting its room.
+
+Readiness gates detection during setup, voice preparation, and reconnects. A
+readiness loss clears accumulated visual evidence while preserving earned
+cooldowns. Async callbacks carry a generation so a late detection or connection
+cannot restart an ended mission. End Mission stops publication and camera capture;
+a server-side deadline and a local monotonic deadline enforce the hidden
+15-minute failsafe. No mission timer or one-minute warning is shown.
+
+The mission worker is in `agent/corvus_mission.py`, its voice adapter in
+`agent/corvus_mission_voice.py`, and recording/storage adapters in
+`agent/corvus_mission_storage.py`. Legacy standalone interviews remain in
+`agent/corvus_intercept.py`. See [realtime.md](realtime.md) for the companion token
+service and protocol rollout requirements.
+
 ## The watcher
 
 All on-device except the vision call. No server is involved.

@@ -37,6 +37,17 @@ final class WatcherCoordinator: ObservableObject {
   /// thresholds all come from here rather than from code.
   @Published private(set) var study: Study
 
+  private var detectionGeneration = 0
+  private var runGeneration = 0
+  private var missionReady = true
+  func setMissionReady(_ ready: Bool) {
+    guard missionReady != ready else { return }
+    missionReady = ready
+    detectionGeneration += 1
+    isDetecting = false
+    machine.clearEvidence()
+  }
+
   private var detector: ProductDetector
   private let sampler = FrameSampler()
   private var machine: TriggerStateMachine
@@ -94,6 +105,7 @@ final class WatcherCoordinator: ObservableObject {
 
   func start() {
     guard !isRunning else { return }
+    runGeneration += 1
     isRunning = true
     sampler.reset()
     machine.reset()
@@ -102,6 +114,9 @@ final class WatcherCoordinator: ObservableObject {
   }
 
   func stop() {
+    runGeneration += 1
+    detectionGeneration += 1
+    isDetecting = false
     isRunning = false
     // Leaving the glasses talking to someone who has taken them off, or into a
     // study that no longer applies, is worse than losing the answer.
@@ -122,14 +137,14 @@ final class WatcherCoordinator: ObservableObject {
 
   func submit(pixelBuffer: CVPixelBuffer) {
     framesSeen += 1
-    guard isRunning, !isDetecting, sampler.shouldSample() else { return }
+    guard isRunning, missionReady, !isDetecting, sampler.shouldSample() else { return }
     guard let jpeg = sampler.jpeg(from: pixelBuffer) else { return }
     analyse(jpeg)
   }
 
   func submit(image: UIImage) {
     framesSeen += 1
-    guard isRunning, !isDetecting, sampler.shouldSample() else { return }
+    guard isRunning, missionReady, !isDetecting, sampler.shouldSample() else { return }
     guard let jpeg = sampler.jpeg(from: image) else { return }
     analyse(jpeg)
   }
@@ -141,6 +156,7 @@ final class WatcherCoordinator: ObservableObject {
     // One detector call in flight at a time. Sampling is time-based, so a slow
     // backend would otherwise queue calls that describe a moment already past.
     isDetecting = true
+    let generation = detectionGeneration
     let detector = self.detector
     let study = self.study
 
@@ -151,8 +167,10 @@ final class WatcherCoordinator: ObservableObject {
         // and waiting on the network have no business on the UI thread, and
         // this Task inherits main-actor isolation without the detour.
         let outcome = try await self.runDetector(detector, jpeg: jpeg, study: study)
+        guard self.isRunning, self.missionReady, generation == self.detectionGeneration else { return }
         self.handle(outcome, jpeg: jpeg)
       } catch {
+        guard generation == self.detectionGeneration else { return }
         self.handle(error, detectorName: detector.name)
       }
     }
@@ -249,10 +267,12 @@ final class WatcherCoordinator: ObservableObject {
     // The frame that fired the trigger, so the interceptor can be concrete
     // about the actual product rather than the category.
     let frame = CorvusConfig.sendTriggerFrameToBrain ? jpeg : nil
+    let generation = runGeneration
     Task { [weak self] in
       let record = await interceptor.conduct(trigger, study: study, frame: frame)
       guard let self else { return }
       self.intercepts.insert(record, at: 0)
+      guard generation == self.runGeneration else { return }
       self.isIntercepting = false
       self.machine.endIntercept(at: Date())
     }

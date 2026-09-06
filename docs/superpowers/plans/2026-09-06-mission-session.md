@@ -6,11 +6,22 @@
 
 **Architecture:** A Corvus mission coordinator owns iOS capture and room lifetime. A mission worker owns successive voice conversations, recording, and the authoritative deadline; interview completion never deletes the room. Prepare clean voice sessions between interviews while the existing cooldown runs, rather than relying on Gemini history deletion.
 
-**Tech Stack:** Swift/SwiftUI, XCTest, LiveKit Swift SDK pinned in this repo to 2.16.0, Python 3.12 worker, LiveKit Agents/Google/OpenAI plugins, existing S3 recording destination. Python package declarations currently contain minimum versions, not a deployment lock.
+**Tech Stack:** Swift/SwiftUI, XCTest, LiveKit Swift SDK pinned in this repo to 2.16.0, Python 3.12 worker, LiveKit Agents/Google/OpenAI plugins, existing S3 recording destination. The implementation pins LiveKit Agents and the Google/OpenAI plugins to 1.8.0, and google-genai to 2.22.0.
 
 **Spec:** `docs/superpowers/specs/2026-09-06-mission-session-design.md`
 
-**Status:** Local implementation tasks and proposed wire contract are written. Task 1 must resolve the external token-service ownership and verify deployed SDK/model behavior before transport or backend implementation. This document does not authorize application changes or deployment.
+**Status:** Implementation authorized and completed locally on the prototype branches. External token-service source ownership is resolved. See [integration evidence](2026-09-06-mission-integration-evidence.md) and [validation](2026-09-06-mission-validation.md) for the delivered scope and remaining deployment/hardware checks. The task checkboxes below preserve the original implementation checklist; they are not a claim of completed hardware acceptance.
+
+## Execution outcome
+
+Tasks 1–6 are implemented locally across the glasses and companion gateway
+branches. Task 7 automated checks and a live synthetic welcome/three-interview
+probe passed. Hardware, full recording acceptance, container build, and
+coordinated deployment remain pending as detailed in the validation report.
+The implementation consolidates several proposed files, uses the existing shared
+bearer authentication, and fails visibly after worker loss rather than creating
+replacement-room recording segments. The durable Workflow watchdog adds orphan
+cleanup independent of the phone and worker.
 
 ## Global Constraints
 
@@ -33,7 +44,7 @@ The current phone starts/stops LiveKit per interview; the worker ends by deletin
 
 Google documents connection resets around ten minutes independently of its audio session lifetime. Current upstream LiveKit Google code warns that removing chat history does not remove server-side messages. Neither the current upstream adapter nor documentation proves the behavior of the deployed minimum-version dependencies.
 
-Choose a clean voice session after the welcome and after every interview, prepared while the watcher is gated and its cooldown runs. Keep the mission room and recorder. Use fixed mission policy as initial system instructions and deliver the device-composed interview brief in the explicit begin reply. Verify the selected model actually honors that brief without reconnecting. Refresh an unused prepared voice session at eight minutes of voice-session age, independently of the mission clock. Do not reset an active interview just because its age reaches eight minutes; handle provider resumption and errors separately.
+Choose a clean voice session after the welcome and after every interview, prepared while the watcher is gated and its cooldown runs. Keep the mission room and recorder. Use fixed mission policy as initial system instructions and deliver the device-composed interview brief in the explicit begin reply. Verify the selected model actually honors that brief without reconnecting. Refresh an unused prepared voice session at four minutes of voice-session age, independently of the mission clock. Do not reset an active interview just because its age reaches four minutes; handle provider resumption and errors separately.
 
 References checked during planning:
 

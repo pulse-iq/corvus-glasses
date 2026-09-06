@@ -2,9 +2,9 @@
 
 Date: 2026-09-06
 Branch: `codex/mission-session-prototype`
-Status: Design approved, including the invisible failsafe correction; application implementation has not started.
+Status: Design approved and implemented locally, including the invisible failsafe correction. Deployment and live-device acceptance remain pending.
 
-Implementation plan: `docs/superpowers/plans/2026-09-06-mission-session.md` (external service integration prerequisite remains open).
+Implementation plan: `docs/superpowers/plans/2026-09-06-mission-session.md` (external service source identified; see the companion integration evidence and validation report).
 
 ## Objective
 

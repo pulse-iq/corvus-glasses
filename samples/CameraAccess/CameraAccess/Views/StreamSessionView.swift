@@ -23,6 +23,8 @@ struct StreamSessionView: View {
   let wearables: WearablesInterface?
   private let wearablesViewModel: WearablesViewModel?
   @StateObject private var viewModel: StreamSessionViewModel
+  @StateObject private var mission = MissionCoordinator()
+  private var missionMode: Bool { !UserDefaults.standard.bool(forKey: "corvus.legacySessionMode") }
   @StateObject private var liveKit = LiveKitSession()
   /// The Corvus watcher. Watches the same glasses frames the call publishes
   /// and decides when a pickup is worth interrupting for.
@@ -70,6 +72,61 @@ struct StreamSessionView: View {
   }
 
   var body: some View {
+    if missionMode { missionView } else { legacyView }
+  }
+
+  private var missionView: some View {
+    ZStack {
+      LiveKitStreamView(session: liveKit, glassesPlaceholder: glassesPlaceholder, missionControls: true)
+      VStack(spacing: 12) {
+        HStack {
+          Text(StudyStore.shared.active.name).font(.headline)
+          Spacer()
+          Button { showSettings = true } label: { Image(systemName: "gearshape.fill") }.disabled(mission.isActive)
+        }
+        .padding()
+        Spacer()
+        if let error = mission.errorMessage { Text(error).font(.footnote).multilineTextAlignment(.center) }
+        Text(missionStatus).font(.headline)
+        if let status = mission.recordingStatus { Label("Recording: \(status)", systemImage: "record.circle").font(.subheadline) }
+        if mission.isActive {
+          Button("End Mission") { Task { await mission.end() } }
+            .buttonStyle(.borderedProminent).tint(.red).disabled(mission.lifecycle.phase == .ending)
+        } else {
+          Text(captureSource == .glasses ? "Glasses camera" : "iPhone camera").font(.subheadline)
+          Button("Start Mission") {
+            mission.start(study: StudyStore.shared.active, source: captureSource,
+              engine: IntelligenceEngine(rawValue: intelligenceRaw) ?? .gemini,
+              startDAT: { await viewModel.handleStartStreaming() })
+          }.buttonStyle(.borderedProminent)
+          if captureSource == .glasses, let wearablesViewModel, wearablesViewModel.registrationState != .registered {
+            HomeScreenView(viewModel: wearablesViewModel).frame(maxHeight: 240)
+          }
+        }
+      }.padding(24).foregroundStyle(.white)
+    }
+    .sheet(isPresented: $showSettings) { SettingsView() }
+    .task {
+      viewModel.onDecodedFrame = { [weak liveKit] buffer in liveKit?.pushGlassesFrame(buffer) }
+      viewModel.onAnalysisFrame = { _ in FrameHeartbeat.shared.tick() }
+      mission.attach(session: liveKit, watcher: watcher, stopDAT: { await viewModel.stopSession() })
+    }
+  }
+
+  private var missionStatus: String {
+    switch mission.lifecycle.phase {
+    case .idle: return "Ready to start"
+    case .starting: return "Starting mission…"
+    case .welcome: return "Welcome"
+    case .shopping: return "Mission active"
+    case .interviewing: return "Interviewing"
+    case .reconnecting: return "Reconnecting…"
+    case .ending: return "Ending mission…"
+    case .ended: return "Mission ended"
+    }
+  }
+
+  private var legacyView: some View {
     ZStack {
       if captureSource == .iPhoneCamera {
         LiveKitStreamView(session: liveKit)

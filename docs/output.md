@@ -1,22 +1,49 @@
 # Output
 
-Everything a session produces lands in the app's Documents container on the
-phone. There is no backend in this loop: a proof of concept should not need a
-network to keep its data.
+Local logs and interview records land in the app's Documents container. Realtime
+missions also persist full recordings and authoritative interview results in the
+recording bucket so a phone disconnect does not lose the only copy.
 
 ```
 Documents/corvus/
 └── session-<timestamp>/
     ├── events.jsonl          append-only trace of the whole run
     ├── intercepts/<uuid>.json    the deliverable
+    ├── missions/<uuid>/manifest.json    mission state and received events
     ├── audio/                answer recordings (turn-based interceptors only)
     └── frames/               sampled frames (off by default)
 ```
 
 One session directory per app launch. The directory name — `session-<timestamp>`
-— is also the prefix that realtime recordings are filed under in the bucket, so
-a folder pulled off the phone and the objects in the bucket carry the same
-string and line up without a lookup table.
+— is also the prefix used by legacy standalone realtime recordings. Mission
+recordings use mission and segment UUIDs instead; their manifest retains the
+phone session name.
+
+## Full-mission recordings
+
+```text
+hack/missions/<missionId>/
+└── segments/<segmentId>/
+    ├── recording.mp4
+    ├── manifest.json
+    └── interviews/<interceptId>.json
+```
+
+One recording spans the welcome, ambient shopping audio/video, and all interviews
+in an uninterrupted mission. The manifest contains recording status, egress ID,
+recording start time, mission start/deadline/end information, and interview
+references. A recorder reported as finalizing is not yet a saved file; the
+companion mission-status endpoint reconciles its eventual result.
+
+Local `InterceptRecord` adds optional `missionID`, `segmentID`,
+`recordingOffsetSeconds`, and `authoritativeTurns`. Existing records remain
+readable. Authoritative turns retain ordered role/text/timestamp values; the
+question/answer view remains available for existing consumers. The greeting and
+ambient shopping audio do not belong to individual interview transcripts.
+
+Cloud recordings cannot reconstruct footage lost during an uplink outage. This
+prototype retries within the same room and ends visibly if recovery fails;
+replacement-room recording and stitching are outside the implemented scope.
 
 ## Getting it off the phone
 
@@ -102,9 +129,11 @@ answer audio to the phone — its audio is in the room recording instead.
 `corvus-tools/` gets built, not something to leave running during a session:
 every sampled frame is written alongside its verdict.
 
-## Video
+## Legacy standalone video
 
-Video lives elsewhere and only the realtime interceptor produces any.
+The following describes the retained standalone realtime interceptor. Mission
+recordings follow the full-mission layout above and include footage before an
+intercept when capture and the uplink are healthy.
 
 Realtime intercepts are recorded off the room and uploaded straight to object
 storage by the media server — the phone holds no storage credentials and uploads

@@ -316,6 +316,8 @@ final class TriggerStateMachine {
     interceptsFired = 0
   }
 
+  func clearEvidence() { resetPrimitives() }
+
   private func resetPrimitives() {
     for primitive in primitives { primitive.reset() }
   }

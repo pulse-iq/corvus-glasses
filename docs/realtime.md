@@ -1,4 +1,62 @@
-# The realtime interceptor
+# Realtime missions and interviews
+
+## Mission prototype
+
+The participant flow now starts with **Start Mission**. It connects one room,
+prepares the voice agent, and starts a full-mission recording. After camera,
+recorder, and agent readiness, the worker gives the welcome and enables product
+interviews. **End Mission** stops capture and ends the room; a hidden 15-minute
+failsafe also ends an unattended mission. There is no countdown or advance warning.
+
+A product trigger sends an interview brief over the existing room. Finishing an
+interview saves its transcript and returns to quiet shopping without stopping the
+room or recorder. The microphone remains published for ambient recording while
+voice-model input is disabled. A clean voice session is prepared between
+interviews so one interview's answers do not enter the next one's model context.
+Video is recorded but is not sent to the voice model.
+
+Mission control uses version 1 JSON on `corvus.mission.command` and
+`corvus.mission.event`. The ticket must advertise `missionVersion: 1` and the
+assigned worker identity. An old endpoint must fail visibly instead of opening a
+generic assistant session. The original standalone interceptor described below
+is retained for development/legacy use.
+
+### Backend pairing
+
+The app's compiled endpoint is the `pulse-iq/pulseiq-client` glasses preview,
+under `/api/glasses`. Its sources are on `hack/corvus-glasses`, not in this
+repository's upstream `gateway/` directory. The companion mission changes are on
+`codex/glasses-mission-gateway`; the worker and token service must both be updated
+before using mission mode. No deployment is implied by building this branch.
+
+The companion API provides:
+
+- `POST /livekit-token`: idempotent mission room allocation and named dispatch.
+- `POST /mission-end` with `{ "missionId": "<uuid>" }`: authenticated teardown
+  fallback, including cancellation before a ticket finishes.
+- `GET /mission-status?missionId=<uuid>`: durable mission/recording status.
+- `GET /mission-status?missionId=<uuid>&interceptId=<uuid>`: full saved interview.
+
+All use the existing shared `CORVUS_GLASSES_TOKEN` bearer credential. The gateway
+also needs its existing Upstash Redis configuration for durable allocation and
+end markers, plus read access to the worker's recording bucket. Keep
+`RECORDINGS_S3_BUCKET`, `RECORDINGS_S3_REGION`, and AWS permissions aligned across
+the service and worker. The worker needs object-write permission for MP4 and JSON
+results. The phone never receives storage credentials.
+
+The registry deliberately refuses to redispatch an uncertain or lost worker into
+an existing mission. LiveKit can recover a transient connection in the same room;
+if that fails, the prototype ends with partial results and the shopper can start
+a new mission. Automatic replacement rooms and stitched recordings are not
+implemented. Neither a rejoin nor a retry resets the original mission deadline.
+
+Recording stop and recording saved are separate states. A finalizing recording
+is reconciled through the status endpoint; do not delete its room or recorder
+participant merely because a stop request returned. A full-duration hardware test
+is still required to establish battery use, background capture, and measured
+trigger-to-audio latency for the deployed configuration.
+
+## Standalone realtime interceptor
 
 `liveKit` is the default interceptor. It trades the simplicity of the turn-based
 modes -- which need nothing but a model key -- for sub-second turnaround: the
