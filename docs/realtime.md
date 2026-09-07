@@ -23,13 +23,14 @@ is retained for development/legacy use.
 
 ### Backend pairing
 
-The app's compiled endpoint is the `pulse-iq/pulseiq-client` glasses preview,
-under `/api/glasses`. Its sources are on `hack/corvus-glasses`, not in this
-repository's upstream `gateway/` directory. The companion mission changes are on
-`codex/glasses-mission-gateway`; the worker and token service must both be updated
-before using mission mode. No deployment is implied by building this branch.
+The token and mission service now lives in this repository's `web/` directory.
+Deploy it as its own Vercel project with Root Directory `web`; see
+[web setup](../web/README.md). Set the app's Gateway URL to that deployment's
+stable domain followed by `/api/glasses`. There is no dependency on the main
+Corvus web application. The retained upstream `gateway/` is a different service.
+Both this service and the Python worker must be deployed before using missions.
 
-The companion API provides:
+The web API provides:
 
 - `POST /livekit-token`: idempotent mission room allocation and named dispatch.
 - `POST /mission-end` with `{ "missionId": "<uuid>" }`: authenticated teardown
@@ -37,8 +38,8 @@ The companion API provides:
 - `GET /mission-status?missionId=<uuid>`: durable mission/recording status.
 - `GET /mission-status?missionId=<uuid>&interceptId=<uuid>`: full saved interview.
 
-All use the existing shared `CORVUS_GLASSES_TOKEN` bearer credential. The gateway
-also needs its existing Upstash Redis configuration for durable allocation and
+All use the existing shared `CORVUS_GLASSES_TOKEN` bearer credential. The web service
+also needs its own Upstash Redis configuration for durable allocation and
 end markers, plus read access to the worker's recording bucket. Keep
 `RECORDINGS_S3_BUCKET`, `RECORDINGS_S3_REGION`, and AWS permissions aligned across
 the service and worker. The worker needs object-write permission for MP4 and JSON
@@ -142,8 +143,9 @@ attributed — and publishes the transcript as JSON on a data topic **before**
 deleting the room. Deleting the room closes the engine, and anything published
 after that fails.
 
-That published payload is also the only channel back to the phone: it is how the
-device learns `recordingKey`. Corvus has no backend to ask later.
+For legacy standalone interviews, that payload carries `recordingKey` back to
+the phone. Missions additionally persist their results and expose them through
+the `web/` status endpoint after a disconnect.
 
 ## Ending
 

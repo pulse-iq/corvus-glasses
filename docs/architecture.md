@@ -39,7 +39,7 @@ a server-side deadline and a local monotonic deadline enforce the hidden
 The mission worker is in `agent/corvus_mission.py`, its voice adapter in
 `agent/corvus_mission_voice.py`, and recording/storage adapters in
 `agent/corvus_mission_storage.py`. Legacy standalone interviews remain in
-`agent/corvus_intercept.py`. See [realtime.md](realtime.md) for the companion token
+`agent/corvus_intercept.py`. See [realtime.md](realtime.md) for the standalone `web/` token
 service and protocol rollout requirements.
 
 ## The watcher
@@ -168,6 +168,7 @@ earbuds will otherwise win the route and nothing will say so.
 | `Corvus/*Interceptor.swift` | the three implementations |
 | `Corvus/CorvusLog.swift` | the session log |
 | `agent/` | the deployed realtime worker |
+| `web/` | standalone Vercel mission/token service and cleanup watchdog |
 | `corvus-tools/` | offline detector benchmark |
 
 Corvus is a fork of [VisionClaw](https://github.com/Intent-Lab/VisionClaw) and

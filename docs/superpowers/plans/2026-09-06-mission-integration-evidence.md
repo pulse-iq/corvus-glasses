@@ -1,5 +1,10 @@
 # Mission integration evidence
 
+> Historical record of the initial companion-repository implementation. The
+> backend has since moved into this repository's `web/` app; see
+> [web setup](../../../web/README.md) and the web-monorepo validation notes.
+
+
 ## Actual token service
 
 The compiled iOS gateway URL points to the Vercel preview for `pulse-iq/pulseiq-client`, branch `hack/corvus-glasses`, under `/api/glasses`. Device settings can override that compiled URL.
