@@ -109,7 +109,54 @@ struct StreamSessionView: View {
     .task {
       viewModel.onDecodedFrame = { [weak liveKit] buffer in liveKit?.pushGlassesFrame(buffer) }
       viewModel.onAnalysisFrame = { _ in FrameHeartbeat.shared.tick() }
-      mission.attach(session: liveKit, watcher: watcher, stopDAT: { await viewModel.stopSession() })
+      // The glasses stream belongs to this view, not to the mission: it opens
+      // before Start Mission so the wearer sees the world, and it outlives End
+      // Mission so the screen does not go dark for the 15-30 s DAT needs to
+      // come back. End Mission still stops room publication and drops the room.
+      mission.attach(session: liveKit, watcher: watcher, stopDAT: {})
+    }
+    .task(id: missionPreviewKey) { await startMissionPreview() }
+    .onChange(of: scenePhase) { phase in
+      // As in the legacy view: the glasses camera grant lands in a second Meta
+      // AI hand-off and is still invisible to checkPermissionStatus at the
+      // instant the app foregrounds, so poll without requesting.
+      guard phase == .active, captureSource == .glasses, !viewModel.isStreaming else { return }
+      glassesResumeTask?.cancel()
+      glassesResumeTask = Task {
+        for _ in 0..<10 {
+          if Task.isCancelled || viewModel.isStreaming || captureSource != .glasses { return }
+          if await viewModel.resumeIfPermitted() { return }
+          try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+      }
+    }
+    .onDisappear { glassesResumeTask?.cancel() }
+  }
+
+  /// Changes when a mission ends or the capture source changes, so the preview
+  /// task runs again exactly then.
+  private var missionPreviewKey: String { "\(mission.isActive)|\(captureSourceRaw)" }
+
+  /// Between missions: a local preview track on the screen and, for the
+  /// glasses, the DAT stream that feeds it. Start Mission hands the same
+  /// stream to the room; when the room is gone this runs again.
+  private func startMissionPreview() async {
+    guard !mission.isActive else { return }
+    if captureSource == .iPhoneCamera, viewModel.isStreaming { await viewModel.stopSession() }
+    await liveKit.startPreview()
+    guard captureSource == .glasses, let wearablesViewModel else { return }
+    // Registration can finish after this view appears (it goes through the
+    // Meta AI app), so keep looking for it; once registered, the start
+    // attempts run on the same cadence the legacy view shipped with.
+    for _ in 0..<12 {
+      guard !Task.isCancelled, !mission.isActive, captureSource == .glasses else { return }
+      var attempted = false
+      if wearablesViewModel.registrationState == .registered || wearablesViewModel.hasMockDevice {
+        await viewModel.handleStartStreaming()
+        if viewModel.isStreaming { return }
+        attempted = true
+      }
+      try? await Task.sleep(nanoseconds: attempted ? 10_000_000_000 : 2_000_000_000)
     }
   }
 
