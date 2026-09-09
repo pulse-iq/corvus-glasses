@@ -160,20 +160,6 @@ class MissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a, b)
         self.assertEqual(len(self.voice.calls), 1)
 
-    async def test_deadline_interrupts_and_persists_before_room_delete(self):
-        await self.ready()
-        self.now = self.m.deadline
-        await self.m.tick()
-        self.assertEqual(self.m.phase, "ended")
-        self.assertEqual(self.rec.status, "saved")
-        self.assertEqual(self.room.deletes, 1)
-        self.assertTrue(
-            any(
-                v.get("endedBecause") == "mission_time_limit"
-                for v in self.store.values.values()
-            )
-        )
-
     async def test_heartbeat_loss_gates_new_interviews(self):
         await self.ready()
         self.now += 7000
@@ -256,22 +242,6 @@ class MissionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.m.phase, "shopping")
 
-    async def test_begin_at_deadline_rejected_without_starting_voice(self):
-        await self.ready()
-        self.now = self.m.deadline
-        c = self.cmd(
-            "begin_intercept",
-            studyId="s",
-            itemId="i",
-            itemName="Milk",
-            instructions="Ask",
-            openingQuestion="Why?",
-            triggeredAtMs=self.now,
-        )
-        c["interceptId"] = str(uuid4())
-        self.assertEqual((await self.m.handle(c, "phone"))["type"], "rejected")
-        self.assertEqual(self.voice.calls, [])
-
     async def test_end_while_accept_send_suspended_does_not_start_interview(self):
         await self.ready()
         entered = asyncio.Event()
@@ -303,13 +273,21 @@ class MissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.voice.calls, [])
         self.assertEqual(self.m.phase, "ended")
 
+    async def test_no_time_limit_on_a_long_quiet_mission(self):
+        await self.ready()
+        self.now += 3 * 60 * 60_000
+        self.m.heartbeat = self.now
+        await self.m.tick()
+        self.assertEqual(self.m.phase, "shopping")
+        self.assertNotIn("deadlineMs", self.m.snapshot())
+
     async def test_end_reason_preserved(self):
         await self.ready()
         await self.m.handle(
-            self.cmd("end_mission", reason="mission_time_limit"), "phone"
+            self.cmd("end_mission", reason="setup_failed"), "phone"
         )
         self.assertEqual(
-            self.events[-1]["payload"]["endedBecause"], "mission_time_limit"
+            self.events[-1]["payload"]["endedBecause"], "setup_failed"
         )
 
     async def test_end_cancels_post_interview_preparation(self):

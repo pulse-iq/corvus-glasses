@@ -5,8 +5,9 @@
 The participant flow now starts with **Start Mission**. It connects one room,
 prepares the voice agent, and starts a full-mission recording. After camera,
 recorder, and agent readiness, the worker gives the welcome and enables product
-interviews. **End Mission** stops capture and ends the room; a hidden 15-minute
-failsafe also ends an unattended mission. There is no countdown or advance warning.
+interviews. **End Mission** stops capture and ends the room. There is no mission
+time limit: a trip lasts as long as it lasts. An unattended mission ends when the
+phone stops heartbeating (worker side) or the worker leaves the room (gateway side).
 
 A product trigger sends an interview brief over the existing room. Finishing an
 interview saves its transcript and returns to quiet shopping without stopping the
@@ -49,7 +50,7 @@ The registry deliberately refuses to redispatch an uncertain or lost worker into
 an existing mission. LiveKit can recover a transient connection in the same room;
 if that fails, the prototype ends with partial results and the shopper can start
 a new mission. Automatic replacement rooms and stitched recordings are not
-implemented. Neither a rejoin nor a retry resets the original mission deadline.
+implemented. A rejoin reuses the same room, identity and recording.
 
 Recording stop and recording saved are separate states. A finalizing recording
 is reconciled through the status endpoint; do not delete its room or recorder

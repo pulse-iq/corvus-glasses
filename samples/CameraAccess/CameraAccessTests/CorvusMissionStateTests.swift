@@ -6,17 +6,25 @@ final class CorvusMissionStateTests: XCTestCase {
     var state = MissionState()
     let generation = state.begin()
     state.end()
-    state.apply(phase: .shopping, generation: generation, deadline: 100, serverNow: 0, uptime: 0)
+    state.apply(phase: .shopping, generation: generation)
     XCTAssertEqual(state.phase, .ending)
   }
-  func testDuplicateStartAndRecoveryKeepDeadline() {
+  func testDuplicateStartAndRecoveryKeepStartedLatch() {
     var state = MissionState()
     let generation = state.begin()
     XCTAssertEqual(generation, state.begin())
-    state.apply(phase: .shopping, generation: generation, deadline: 100_000, serverNow: 0, uptime: 5)
-    state.apply(phase: .reconnecting, generation: generation, deadline: nil, serverNow: 20_000, uptime: 25)
-    state.apply(phase: .shopping, generation: generation, deadline: 200_000, serverNow: 20_000, uptime: 25)
-    XCTAssertEqual(state.deadlineUptime, 105)
-    XCTAssertTrue(state.expired(uptime: 105))
+    XCTAssertFalse(state.started)
+    state.apply(phase: .shopping, generation: generation)
+    state.apply(phase: .reconnecting, generation: generation)
+    XCTAssertEqual(state.phase, .reconnecting)
+    XCTAssertTrue(state.started)
+  }
+  func testNewMissionForgetsPreviousStart() {
+    var state = MissionState()
+    let first = state.begin()
+    state.apply(phase: .shopping, generation: first)
+    state.end(); state.finishedEnding()
+    _ = state.begin()
+    XCTAssertFalse(state.started)
   }
 }

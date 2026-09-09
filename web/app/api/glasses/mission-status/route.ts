@@ -12,11 +12,7 @@ export async function GET(request: Request) {
     const owner = authorize(request);
     const query = new URL(request.url).searchParams;
     return Response.json(
-      await missionStatus(
-        owner,
-        query.get('missionId') ?? '',
-        query.get('interceptId')
-      ),
+      await missionStatus(owner, query.get('missionId') ?? ''),
       { headers: { 'Cache-Control': 'no-store' } }
     );
   } catch (error) {

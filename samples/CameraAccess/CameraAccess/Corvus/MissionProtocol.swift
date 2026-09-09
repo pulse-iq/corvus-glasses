@@ -31,7 +31,6 @@ struct MissionPayload: Codable {
   var phase: MissionPhase?
   var serverNowMs: Double?
   var startedAtMs: Double?
-  var deadlineMs: Double?
   var voiceReady: Bool?
   var recordingStatus: String?
   var recordingKey: String?

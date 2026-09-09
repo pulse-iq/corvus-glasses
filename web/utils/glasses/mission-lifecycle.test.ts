@@ -13,7 +13,6 @@ const f = vi.hoisted(() => ({
   stopEgress: vi.fn(),
   removeParticipant: vi.fn(),
   updateRoomMetadata: vi.fn(),
-  object: vi.fn(),
   jwt: vi.fn()
 }));
 vi.mock('@upstash/redis', () => ({
@@ -26,14 +25,6 @@ vi.mock('@upstash/redis', () => ({
         return 'OK';
       }
     })
-  }
-}));
-vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: class {
-    send = f.object;
-  },
-  GetObjectCommand: class {
-    constructor(public input: any) {}
   }
 }));
 vi.mock('livekit-server-sdk', () => ({
@@ -72,6 +63,11 @@ const input = {
   sessionId: id,
   studyId: 'study'
 };
+const registry = () =>
+  Array.from(f.data.entries()).find(
+    ([k]) => !k.endsWith(':ended') && !k.endsWith(':status')
+  )![1];
+const worker = { identity: `corvus-mission-agent-${id}` };
 beforeEach(() => {
   vi.clearAllMocks();
   f.data.clear();
@@ -79,10 +75,8 @@ beforeEach(() => {
   Object.assign(process.env, {
     CORVUS_LIVEKIT_URL: 'wss://test',
     CORVUS_LIVEKIT_API_KEY: 'test',
-    CORVUS_LIVEKIT_API_SECRET: 'test',
-    RECORDINGS_S3_BUCKET: 'test'
+    CORVUS_LIVEKIT_API_SECRET: 'test'
   });
-  f.object.mockRejectedValue(Object.assign(new Error(), { name: 'NoSuchKey' }));
   f.createRoom.mockResolvedValue({});
   f.createDispatch.mockResolvedValue({});
   f.deleteRoom.mockResolvedValue({});
@@ -162,18 +156,9 @@ describe('durable mission lifecycle', () => {
     );
     expect(f.createDispatch).toHaveBeenCalledTimes(1);
   });
-  it('reads final file status after worker loss without overwriting the manifest', async () => {
+  it('reports the recording verdict from egress and keeps it once history is gone', async () => {
     await missionTicket(input, 'gemini', 'owner');
-    f.object.mockResolvedValue({
-      Body: {
-        transformToString: async () =>
-          JSON.stringify({
-            phase: 'ended',
-            egressId: 'eg',
-            recordingStatus: 'finalizing'
-          })
-      }
-    });
+    await endMission('owner', id);
     f.listEgress.mockResolvedValue([
       { egressId: 'eg', status: 3, fileResults: [{ filename: 'movie.mp4' }] }
     ]);
@@ -186,19 +171,29 @@ describe('durable mission lifecycle', () => {
       recordingStatus: 'saved'
     });
   });
-  it('durable watchdog stops an orphan at its original deadline with no HTTP caller', async () => {
+  it('never touches S3 and never imposes a time limit on a healthy mission', async () => {
     await missionTicket(input, 'gemini', 'owner');
-    f.object.mockResolvedValue({
-      Body: {
-        transformToString: async () =>
-          JSON.stringify({
-            phase: 'shopping',
-            deadlineMs: Date.now() - 1,
-            egressId: 'eg',
-            recordingStatus: 'recording'
-          })
-      }
+    f.listParticipants.mockResolvedValue([worker]);
+    f.listEgress.mockResolvedValue([
+      { egressId: 'eg', status: 1, fileResults: [] }
+    ]);
+    registry().createdAtMs = Date.now() - 3 * 60 * 60_000;
+    const tick = await missionWatchdogTick('owner', id);
+    expect(tick.done).toBe(false);
+    expect(tick.nextAtMs - Date.now()).toBeGreaterThan(30_000);
+    expect(f.stopEgress).not.toHaveBeenCalled();
+    expect(f.updateRoomMetadata).not.toHaveBeenCalled();
+    expect(await missionStatus('owner', id)).toMatchObject({
+      phase: 'shopping',
+      recordingStatus: 'recording'
     });
+  });
+  it('durable watchdog ends an orphan whose worker left, then finishes on a verdict', async () => {
+    await missionTicket(input, 'gemini', 'owner');
+    f.listParticipants.mockResolvedValue([worker]);
+    await missionStatus('owner', id);
+    f.listParticipants.mockResolvedValue([]);
+    registry().createdAtMs = Date.now() - 46_000;
     f.listEgress.mockResolvedValue([
       { egressId: 'eg', status: 1, fileResults: [] }
     ]);
@@ -207,18 +202,27 @@ describe('durable mission lifecycle', () => {
     expect(f.stopEgress).toHaveBeenCalledWith('eg');
     expect(
       JSON.parse(f.updateRoomMetadata.mock.calls[0][1]).corvus.missionEndReason
-    ).toBe('mission_time_limit');
+    ).toBe('worker_unavailable');
     f.listEgress.mockResolvedValue([
       { egressId: 'eg', status: 3, fileResults: [{ filename: 'video.mp4' }] }
     ]);
     expect((await missionWatchdogTick('owner', id)).done).toBe(true);
   });
-  it('durable watchdog bounds setup when the worker never writes readiness', async () => {
+  it('durable watchdog gives up waiting for a verdict half an hour after End', async () => {
     await missionTicket(input, 'gemini', 'owner');
-    const entry = Array.from(f.data.entries()).find(
-      ([k]) => !k.endsWith(':ended')
-    )!;
-    entry[1].createdAtMs = Date.now() - 46_000;
+    f.listEgress.mockResolvedValue([
+      { egressId: 'eg', status: 2, fileResults: [] }
+    ]);
+    await endMission('owner', id);
+    expect((await missionWatchdogTick('owner', id)).done).toBe(false);
+    f.data.get(
+      Array.from(f.data.keys()).find((k) => k.endsWith(':ended'))!
+    ).endedAtMs = Date.now() - 31 * 60_000;
+    expect((await missionWatchdogTick('owner', id)).done).toBe(true);
+  });
+  it('durable watchdog bounds setup when the worker never joins', async () => {
+    await missionTicket(input, 'gemini', 'owner');
+    registry().createdAtMs = Date.now() - 46_000;
     expect((await missionWatchdogTick('owner', id)).done).toBe(true);
     expect(
       JSON.parse(f.updateRoomMetadata.mock.calls[0][1]).corvus.missionEndReason

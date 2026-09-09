@@ -32,9 +32,9 @@ quiet shopping rather than deleting its room.
 Readiness gates detection during setup, voice preparation, and reconnects. A
 readiness loss clears accumulated visual evidence while preserving earned
 cooldowns. Async callbacks carry a generation so a late detection or connection
-cannot restart an ended mission. End Mission stops publication and camera capture;
-a server-side deadline and a local monotonic deadline enforce the hidden
-15-minute failsafe. No mission timer or one-minute warning is shown.
+cannot restart an ended mission. End Mission stops publication and camera capture.
+There is no mission time limit and no timer is shown; the safety nets are the
+worker's phone-heartbeat timeout and the gateway's worker-presence check.
 
 The mission worker is in `agent/corvus_mission.py`, its voice adapter in
 `agent/corvus_mission_voice.py`, and recording/storage adapters in

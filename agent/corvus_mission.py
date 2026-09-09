@@ -29,14 +29,12 @@ class MissionSession:
         self.phase = "starting"
         self.started = None
         self.ended_at = None
-        self.deadline = None
         self.sequence = 0
         self.voice_ready = False
         self.camera = False
         self.heartbeat = self.now()
         self.operations = {}
         self.fingerprints = {}
-        self.watchdog = None
         self.results = {}
         self.active = None
         self.lock = asyncio.Lock()
@@ -56,7 +54,6 @@ class MissionSession:
             serverNowMs=self.now(),
             startedAtMs=self.started,
             endedAtMs=self.ended_at,
-            deadlineMs=self.deadline,
             voiceReady=self.voice_ready,
             recordingStatus=self.recording.status,
             recordingKey=self.recording.key,
@@ -112,8 +109,6 @@ class MissionSession:
                 if self.phase != "starting":
                     return
                 self.started = self.now()
-                self.deadline = self.started + 900_000
-                self.watchdog = asyncio.create_task(self.deadline_watchdog())
                 self.phase = "welcome"
                 await self.persist()
                 await self.state()
@@ -163,9 +158,6 @@ class MissionSession:
         if not isinstance(p, dict):
             return await reject("invalid_payload")
         if kind == "begin_intercept":
-            if self.deadline and self.now() >= self.deadline:
-                await self.end("mission_time_limit")
-                return await reject("mission_ended")
             async with self.lock:
                 if self.phase != "shopping" or not self.voice_ready or not self.camera:
                     return await reject("not_ready")
@@ -247,7 +239,6 @@ class MissionSession:
             requested = p.get("reason", "user_ended")
             allowed = {
                 "user_ended",
-                "mission_time_limit",
                 "setup_failed",
                 "camera_timeout",
                 "camera_unavailable",
@@ -353,16 +344,11 @@ class MissionSession:
             await self.finish_active(reason)
         await self.state()
 
-    async def deadline_watchdog(self):
-        await asyncio.sleep(900)
-        await self.end("mission_time_limit")
-
     async def tick(self):
         if self.phase in ("ending", "ended"):
             return
-        if self.deadline and self.now() >= self.deadline:
-            await self.end("mission_time_limit")
-            return
+        # No mission time limit: a trip lasts as long as it lasts. The phone's
+        # heartbeat is the safety net for a mission nobody is attending.
         if self.now() - self.heartbeat > 30000:
             await self.end("camera_timeout")
             return
@@ -396,8 +382,6 @@ class MissionSession:
             return
         self.phase = "ending"
         self.ended_at = self.now()
-        if self.watchdog and self.watchdog is not asyncio.current_task():
-            self.watchdog.cancel()
         self.voice_ready = False
         if (
             self.start_task

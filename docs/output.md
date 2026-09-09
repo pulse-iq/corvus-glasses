@@ -31,7 +31,7 @@ hack/missions/<missionId>/
 
 One recording spans the welcome, ambient shopping audio/video, and all interviews
 in an uninterrupted mission. The manifest contains recording status, egress ID,
-recording start time, mission start/deadline/end information, and interview
+recording start time, mission start/end information, and interview
 references. A recorder reported as finalizing is not yet a saved file; the
 companion mission-status endpoint reconciles its eventual result.
 

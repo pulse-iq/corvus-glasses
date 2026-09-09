@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { Redis } from '@upstash/redis';
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   AccessToken,
   AgentDispatchClient,
@@ -9,6 +8,12 @@ import {
 } from 'livekit-server-sdk';
 
 export const AGENT_NAME = 'corvus-glasses';
+/** How long allocation may take before a missing worker means setup failed. */
+const SETUP_GRACE_MS = 45_000;
+/** How long after End the room is kept for the recorder to finalize. */
+const TEARDOWN_GRACE_MS = 45_000;
+/** How long after End the watchdog keeps waiting for a recording verdict. */
+const FINALIZE_LIMIT_MS = 30 * 60_000;
 export class MissionError extends Error {
   constructor(
     message: string,
@@ -59,8 +64,11 @@ type Registry = {
   state: 'allocating' | 'ready' | 'failed';
   createdAtMs: number;
   watchdogRunId?: string;
+  /** First time the worker was observed in the room. */
+  workerSeenAtMs?: number;
 };
 const key = (owner: string, id: string) => `corvus:mission:v1:${owner}:${id}`;
+const workerIdentity = (id: string) => `corvus-mission-agent-${id}`;
 export function ownerScope(secret: string) {
   return createHash('sha256').update(secret).digest('hex');
 }
@@ -80,7 +88,7 @@ function clients() {
     process.env.CORVUS_LIVEKIT_API_KEY ?? process.env.LIVEKIT_API_KEY;
   const secret =
     process.env.CORVUS_LIVEKIT_API_SECRET ?? process.env.LIVEKIT_API_SECRET;
-  if (!url || !apiKey || !secret || !process.env.RECORDINGS_S3_BUCKET)
+  if (!url || !apiKey || !secret)
     throw new MissionError('Mission service configuration missing', 503);
   const host = url.replace(/^ws/i, 'http');
   return {
@@ -112,29 +120,6 @@ export async function claimMission(
     'OK'
   );
 }
-async function readObject(
-  objectKey: string
-): Promise<Record<string, any> | null> {
-  const s3 = new S3Client({
-    region:
-      process.env.RECORDINGS_S3_REGION ?? process.env.AWS_REGION ?? 'us-east-1'
-  });
-  try {
-    const object = await s3.send(
-      new GetObjectCommand({
-        Bucket: process.env.RECORDINGS_S3_BUCKET,
-        Key: objectKey
-      })
-    );
-    if ((object.ContentLength ?? 0) > 2_000_000)
-      throw new MissionError('Mission artifact too large', 502);
-    const text = await object.Body?.transformToString();
-    return text ? JSON.parse(text) : null;
-  } catch (error) {
-    if ((error as { name?: string }).name === 'NoSuchKey') return null;
-    throw error;
-  }
-}
 export function reconcileRecording(info: {
   status: number;
   fileResults?: unknown[];
@@ -144,10 +129,20 @@ export function reconcileRecording(info: {
   if (info.status === 2) return 'finalizing';
   return info.status === 1 ? 'recording' : 'starting';
 }
-async function manifest(record: Registry) {
-  return readObject(
-    `hack/missions/${record.mission.missionId}/segments/${record.mission.segmentId}/manifest.json`
-  );
+/**
+ * Whether the worker is in the room right now. The gateway has no channel to
+ * the worker other than LiveKit itself, so presence is its only view of the
+ * worker's health; the phone hears the worker's own state over the room.
+ */
+async function workerPresent(
+  c: ReturnType<typeof clients>,
+  record: Registry,
+  id: string
+) {
+  const participants = await c.room
+    .listParticipants(record.room)
+    .catch(() => []);
+  return participants.some((p) => p.identity === workerIdentity(id));
 }
 export async function missionTicket(
   input: Record<string, unknown>,
@@ -168,31 +163,20 @@ export async function missionTicket(
     record.engine !== engine
   )
     throw new MissionError('Mission configuration is immutable');
-  const saved = await manifest(record);
-  if (!won && Date.now() - record.createdAtMs > 45_000) {
-    const participants = await c.room.listParticipants(record.room);
-    if (
-      !participants.some(
-        (p) => p.identity === `corvus-mission-agent-${mission.missionId}`
-      )
-    ) {
-      await endMission(owner, mission.missionId);
-      throw new MissionError('Mission worker unavailable');
-    }
-  }
   if (
-    (saved?.deadlineMs && Date.now() >= saved.deadlineMs) ||
-    ['ended', 'failed'].includes(saved?.phase)
+    !won &&
+    Date.now() - record.createdAtMs > SETUP_GRACE_MS &&
+    !(await workerPresent(c, record, mission.missionId))
   ) {
-    await endMission(owner, mission.missionId);
-    throw new MissionError('Mission already ended');
+    await endMission(owner, mission.missionId, 'worker_unavailable');
+    throw new MissionError('Mission worker unavailable');
   }
   const metadata = JSON.stringify({
     engine,
     corvus: {
       ...mission,
       phoneIdentity: record.phoneIdentity,
-      workerIdentity: `corvus-mission-agent-${mission.missionId}`
+      workerIdentity: workerIdentity(mission.missionId)
     }
   });
   if (won) {
@@ -205,6 +189,9 @@ export async function missionTicket(
       await redis.set(registryKey, record);
       if (await redis.get(`${registryKey}:ended`))
         throw new MissionError('Mission already ended');
+      // The empty timeout only covers a room nobody ever joined; an active
+      // mission always has the phone or the worker in it. Cleanup is the
+      // gateway's job, in missionStatus.
       await c.room.createRoom({
         name: record.room,
         metadata,
@@ -230,9 +217,11 @@ export async function missionTicket(
     await endMission(owner, mission.missionId);
     throw new MissionError('Mission already ended');
   }
+  // Long enough for a first join and an ordinary reconnect. A rejoin after
+  // expiry simply asks for another ticket; the room and identity are reused.
   const token = new AccessToken(c.apiKey, c.secret, {
     identity: record.phoneIdentity,
-    ttl: '30m'
+    ttl: '4h'
   });
   token.metadata = metadata;
   token.addGrant({
@@ -253,72 +242,69 @@ export async function missionTicket(
     token: jwt,
     missionVersion: 1,
     agentName: AGENT_NAME,
-    workerIdentity: `corvus-mission-agent-${mission.missionId}`,
+    workerIdentity: workerIdentity(mission.missionId),
     phoneIdentity: record.phoneIdentity,
     missionId: mission.missionId,
     segmentId: mission.segmentId
   };
 }
+/**
+ * Everything the gateway knows comes from its own registry and from LiveKit:
+ * the worker's presence and the recorder's state. It never reads the bucket.
+ * `phase` uses the phone's vocabulary: starting, shopping, ended.
+ */
 export async function missionStatus(
   owner: string,
-  missionId: string,
-  interceptId?: string | null
+  missionId: string
 ): Promise<Record<string, any>> {
   const id = uuid(missionId);
   const redis = Redis.fromEnv();
   const registryKey = key(owner, id);
   const record = await redis.get<Registry>(registryKey);
   if (!record) throw new MissionError('Mission not found', 404);
-  if (interceptId) {
-    const result = await readObject(
-      `hack/missions/${id}/segments/${record.mission.segmentId}/interviews/${uuid(interceptId)}.json`
-    );
-    if (!result) throw new MissionError('Result not found', 404);
-    return result;
-  }
   const cached = await redis.get<Record<string, any>>(`${registryKey}:status`);
-  const saved = (await manifest(record)) ?? cached;
-  const terminal = await redis.get<{ endedAtMs: number }>(
+  const terminal = await redis.get<{ endedAtMs: number; reason: string }>(
     `${registryKey}:ended`
   );
   const c = clients();
   const egress = await c.egress.listEgress({ roomName: record.room });
-  const info = egress.find((e) => e.egressId === saved?.egressId) ?? egress[0];
-  if (!terminal && saved?.phase !== 'ended') {
-    if (saved?.deadlineMs && Date.now() >= saved.deadlineMs)
-      return endMission(owner, id, 'mission_time_limit');
-    if (Date.now() - record.createdAtMs > 45_000) {
-      const participants = await c.room.listParticipants(record.room);
-      if (
-        !participants.some((p) => p.identity === `corvus-mission-agent-${id}`)
-      )
-        return endMission(owner, id, 'worker_unavailable');
+  const info =
+    egress.find((e) => e.egressId === cached?.egressId) ?? egress[0];
+  let present = false;
+  if (!terminal && record.state === 'ready') {
+    present = await workerPresent(c, record, id);
+    if (present && !record.workerSeenAtMs) {
+      record.workerSeenAtMs = Date.now();
+      await redis.set(registryKey, record);
     }
+    if (!present && Date.now() - record.createdAtMs > SETUP_GRACE_MS)
+      return endMission(
+        owner,
+        id,
+        record.workerSeenAtMs ? 'worker_unavailable' : 'setup_timeout'
+      );
   }
-
   const status = {
-    ...saved,
-    ...(!info &&
-    cached &&
-    cached.egressId === saved?.egressId &&
-    ['saved', 'failed'].includes(cached?.recordingStatus)
-      ? { recordingStatus: cached.recordingStatus }
-      : {}),
     missionId: id,
     segmentId: record.mission.segmentId,
-    phase: terminal
+    phase: terminal || record.state === 'failed'
       ? 'ended'
-      : (saved?.phase ?? (record.state === 'failed' ? 'ended' : 'starting')),
+      : present
+        ? 'shopping'
+        : 'starting',
     ...(record.state === 'failed' ? { endedBecause: 'allocation_failed' } : {}),
+    ...(terminal ? { endedBecause: terminal.reason, endedAtMs: terminal.endedAtMs } : {}),
     ...(info
       ? { recordingStatus: reconcileRecording(info), egressId: info.egressId }
-      : {})
+      : cached && ['saved', 'failed'].includes(cached.recordingStatus)
+        ? { recordingStatus: cached.recordingStatus, egressId: cached.egressId }
+        : {})
   };
-  // Durable reconciliation is separate from the worker-owned manifest; stale worker writes cannot erase termination.
+  // A verdict is kept once reached: egress history is not retained forever.
   await redis.set(`${registryKey}:status`, status);
   if (
-    (saved?.phase === 'ended' ||
-      (terminal && Date.now() - terminal.endedAtMs > 45_000)) &&
+    terminal &&
+    Date.now() - terminal.endedAtMs > TEARDOWN_GRACE_MS &&
     !egress.some((e) => e.status <= 2)
   )
     await c.room.deleteRoom(record.room).catch(() => {});
@@ -356,7 +342,7 @@ export async function endMission(
         corvus: {
           ...record.mission,
           phoneIdentity: record.phoneIdentity,
-          workerIdentity: `corvus-mission-agent-${id}`,
+          workerIdentity: workerIdentity(id),
           missionEndRequested: true,
           missionEndReason: ended?.reason ?? reason
         }
@@ -386,40 +372,34 @@ export function missionFailure(error: unknown) {
   );
 }
 
-/** Node-side watchdog step, separately testable without the Workflow runtime. */
+/**
+ * Node-side watchdog step, separately testable without the Workflow runtime.
+ * There is no mission time limit: a trip lasts as long as it lasts. The
+ * watchdog only ends a mission whose worker has gone, and stops once the
+ * recording has a verdict or has waited long enough for one.
+ */
 export async function missionWatchdogTick(owner: string, missionId: string) {
   const id = uuid(missionId);
   const redis = Redis.fromEnv();
   const registryKey = key(owner, id);
   const record = await redis.get<Registry>(registryKey);
   if (!record) return { done: true, nextAtMs: Date.now() };
-  const saved = await manifest(record);
-  const terminal = await redis.get(`${registryKey}:ended`);
-  const deadline =
-    typeof saved?.deadlineMs === 'number'
-      ? saved.deadlineMs
-      : record.createdAtMs + 45_000;
-  if (!terminal && Date.now() >= deadline)
-    await endMission(
-      owner,
-      id,
-      saved?.deadlineMs ? 'mission_time_limit' : 'setup_timeout'
-    );
   const status = await missionStatus(owner, id);
-  const recordingStatus = status.recordingStatus;
+  const terminal = await redis.get<{ endedAtMs: number }>(
+    `${registryKey}:ended`
+  );
+  const settled =
+    status.recordingStatus === 'saved' ||
+    status.recordingStatus === 'failed' ||
+    !status.egressId;
   const done =
     status.phase === 'ended' &&
-    (recordingStatus === 'saved' ||
-      recordingStatus === 'failed' ||
-      !status.egressId);
-  return {
-    done,
-    nextAtMs: Math.max(
-      Date.now() + 100,
-      Math.min(
-        Date.now() + 10_000,
-        deadline > Date.now() ? deadline : Date.now() + 10_000
-      )
-    )
-  };
+    (settled ||
+      (terminal !== null &&
+        terminal !== undefined &&
+        Date.now() - terminal.endedAtMs > FINALIZE_LIMIT_MS));
+  // Quick while something is settling, slow across a long quiet trip.
+  const interval =
+    status.phase === 'ended' || status.phase === 'starting' ? 10_000 : 60_000;
+  return { done, nextAtMs: Date.now() + interval };
 }

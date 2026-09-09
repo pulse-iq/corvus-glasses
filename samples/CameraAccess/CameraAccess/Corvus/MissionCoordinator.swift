@@ -24,7 +24,6 @@ final class MissionCoordinator: ObservableObject, Interceptor {
   private var stopDAT: (() async -> Void)?
   private var missionID = UUID().uuidString.lowercased()
   private var segmentID = UUID().uuidString.lowercased()
-  private var deadlineTask: Task<Void, Never>?
   private var heartbeat: Task<Void, Never>?
   private var startTask: Task<Void, Never>?
   private var results: [String: InterceptRecord] = [:]
@@ -87,16 +86,15 @@ final class MissionCoordinator: ObservableObject, Interceptor {
   private func tick(generation: Int) async {
     guard generation == lifecycle.generation, let session else { return }
     let now = ProcessInfo.processInfo.systemUptime
-    if lifecycle.expired(uptime: now) { await end(reason: "mission_time_limit"); return }
-    if lifecycle.deadlineUptime == nil, now - setupUptime >= 45 {
+    if !lifecycle.started, now - setupUptime >= 45 {
       errorMessage = "Mission setup timed out. Check camera, agent, and recording availability."
       await end(reason: "setup_timeout"); return
     }
     let ready = session.state == .connected && session.missionTransportConnected && session.agentStatus != .left && session.hasFreshMissionFrame && session.localVideoTrack != nil
     watcher?.setMissionReady(ready && serverShopping && recordingStatus == "recording")
-    if !ready, lifecycle.deadlineUptime != nil {
+    if !ready, lifecycle.started {
       serverShopping = false
-      lifecycle.apply(phase: .reconnecting, generation: generation, deadline: nil, serverNow: 0, uptime: now)
+      lifecycle.apply(phase: .reconnecting, generation: generation)
       lostReadinessAt = lostReadinessAt ?? now
       if now - (lostReadinessAt ?? now) >= 20 { errorMessage = "Mission connection could not recover."; await end(reason: "readiness_timeout"); return }
     } else if ready, lostReadinessAt != nil {
@@ -164,23 +162,13 @@ final class MissionCoordinator: ObservableObject, Interceptor {
       let p = event.payload
       if let status = p.recordingStatus { recordingStatus = status }
       if let phase = p.phase {
-        lifecycle.apply(phase: phase == .ended ? .reconnecting : phase, generation: lifecycle.generation, deadline: p.deadlineMs, serverNow: p.serverNowMs ?? 0, uptime: ProcessInfo.processInfo.systemUptime)
-        if let deadline = lifecycle.deadlineUptime {
-          deadlineTask?.cancel()
-          let generation = lifecycle.generation
-          deadlineTask = Task { [weak self] in
-            let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime - 1)
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled, let self, generation == self.lifecycle.generation else { return }
-            await self.end(reason: "mission_time_limit")
-          }
-        }
+        lifecycle.apply(phase: phase == .ended ? .reconnecting : phase, generation: lifecycle.generation)
         serverShopping = phase == .shopping && p.voiceReady == true && recordingStatus == "recording"
         watcher?.setMissionReady(serverShopping && session?.hasFreshMissionFrame == true)
       }
       if event.type == "mission_ended" || p.phase == .ended {
         // Terminal state still needs local media cleanup.
-        lifecycle.apply(phase: .reconnecting, generation: lifecycle.generation, deadline: nil, serverNow: 0, uptime: 0)
+        lifecycle.apply(phase: .reconnecting, generation: lifecycle.generation)
         Task { await self.end(reason: p.endedBecause ?? p.reason ?? "server_ended") }
       }
     }
@@ -268,7 +256,7 @@ final class MissionCoordinator: ObservableObject, Interceptor {
       results[id]?.endedAt = Date()
       results[id]?.abortReason = reason
     }
-    heartbeat?.cancel(); deadlineTask?.cancel(); startTask?.cancel(); watcher?.setMissionReady(false); watcher?.stop()
+    heartbeat?.cancel(); startTask?.cancel(); watcher?.setMissionReady(false); watcher?.stop()
     // Stop source/publication before the network request, with no preview restart.
     if let media { await media.stopCapture() } else { await session?.stopCapture() }
     await stopDAT?()

@@ -12,8 +12,10 @@ calls, authentication middleware, or build dependencies from `pulseiq-client`.
   a durable cleanup watchdog.
 
 The phone and worker send media directly through LiveKit. This service does not
-proxy audio/video or conduct interviews. Redis retains allocation claims and
-terminal mission IDs; S3 stores the worker's manifests/interviews and recordings.
+proxy audio/video or conduct interviews, and it never touches the recording
+bucket: LiveKit Egress and the worker write there, nothing here reads. Redis
+retains allocation claims and terminal mission IDs; everything else the service
+reports comes from LiveKit (worker presence, egress state).
 
 ## Local development
 
@@ -28,7 +30,7 @@ npm run dev
 
 `GET /` identifies the service without credentials. All `/api/glasses/*` routes
 require `Authorization: Bearer <CORVUS_GLASSES_TOKEN>`. `GET /api/glasses/health`
-checks the shared token; it is not a LiveKit/Redis/S3 connectivity test.
+checks the shared token; it is not a LiveKit/Redis connectivity test.
 Local Workflow state is kept in `.workflow-data/`; production uses Vercel's
 managed Workflow backend automatically.
 
@@ -53,10 +55,8 @@ also needs no secrets and does not fetch fonts or call external APIs.
    `codex/mission-session-prototype`.
 3. Add every required variable from `.env.example` to the environments you will
    test/deploy. Provision a dedicated Upstash Redis database. Use the same
-   glasses LiveKit project and recording bucket/region as `agent/.env`.
-   The web AWS principal needs `s3:GetObject` on
-   `hack/missions/*/segments/*/manifest.json` and interview objects. The worker
-   retains write access; LiveKit Egress uploads the recordings.
+   glasses LiveKit project as `agent/.env`. No AWS credentials are needed
+   here; the worker holds write-only recording credentials.
 4. Deploy. `next.config.ts` enables the Workflow compiler; `vercel.json` selects
    `iad1`. The generated `/.well-known/workflow/v1/*` handlers must remain
    accessible to the Workflow runtime. No main-app login middleware is needed.
@@ -94,9 +94,12 @@ and `workerIdentity`. The named worker is `corvus-glasses`.
 One durable allocation claim prevents duplicate room/worker creation. An end
 request writes a tombstone even before allocation completes. The independent
 Workflow watchdog is scheduled before room creation; it bounds startup at 45
-seconds and preserves the original 15-minute mission deadline. It requests
-recording shutdown even when the phone and worker are gone. Saved/finalizing/
-failed recording status remains distinguishable. Never expire terminal IDs as a
+seconds and ends a mission whose worker has left the room. There is no mission
+time limit: a trip lasts as long as it lasts, and the worker ends the mission
+itself when the phone stops heartbeating. The watchdog requests recording
+shutdown even when the phone and worker are gone, then waits up to 30 minutes
+for a saved/failed verdict. Saved/finalizing/failed recording status remains
+distinguishable. Never expire terminal IDs as a
 routine cache cleanup: that could permit a completed mission ID to be reused.
 
 This prototype uses one shared secret, not individual shopper accounts. The
