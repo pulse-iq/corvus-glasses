@@ -42,9 +42,7 @@ from livekit.agents import (
     cli,
     function_tool,
 )
-# RoomOptions replaces RoomInputOptions/RoomOutputOptions, but 1.7.1 has not
-# re-exported it at livekit.agents top level yet, so it comes from its own
-# module. Move it up to the block above once upstream hoists it.
+# Import RoomOptions from its module in the pinned LiveKit Agents SDK.
 from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import google, openai
 
@@ -710,6 +708,14 @@ def _watch_video(ctx: JobContext, holder: FrameHolder) -> None:
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
+    # A server-side End may beat dispatch and phone arrival.
+    try:
+        room_metadata = json.loads(ctx.room.metadata or "{}")
+    except json.JSONDecodeError:
+        room_metadata = {}
+    if (room_metadata.get("corvus") or {}).get("missionEndRequested") is True:
+        ctx.shutdown()
+        return
 
     # The phone's room token carries identity (= gateway userId) and metadata
     # (= engine choice from Settings). Both decided client-side, minted
@@ -720,6 +726,11 @@ async def entrypoint(ctx: JobContext):
     except json.JSONDecodeError:
         meta = {}
     engine = meta.get("engine", "gemini")
+    if (meta.get("corvus") or {}).get("mode") == "mission":
+        from corvus_mission import run_mission
+        await run_mission(ctx, participant, meta["corvus"], engine,
+                          lambda: build_llm(engine, silent_tools=True))
+        return
     # Corvus: an intercept brief in the same metadata, or None for a normal call.
     corvus_brief = brief_from_metadata(meta)
     intercept = InterceptSession(corvus_brief) if corvus_brief else None
@@ -894,5 +905,21 @@ async def entrypoint(ctx: JobContext):
             logger.exception("failed to deliver parked results: user=%s content=%s", user_id, joined[:500])
 
 
+async def mission_request(request):
+    """Stable authenticated worker identity for mission control messages."""
+    from uuid import UUID
+
+    metadata = json.loads(request.job.metadata or "{}")
+    corvus = metadata.get("corvus") or {}
+    if corvus.get("mode") == "mission":
+        mission_id = str(UUID(corvus["missionId"]))
+        if corvus.get("version") != 1:
+            await request.reject()
+            return
+        await request.accept(identity=f"corvus-mission-agent-{mission_id}")
+    else:
+        await request.accept()
+
+
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name="corvus-glasses"))
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, request_fnc=mission_request, agent_name="corvus-glasses"))

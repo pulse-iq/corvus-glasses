@@ -259,6 +259,19 @@ final class CorvusTriggerTests: XCTestCase {
 
   // MARK: - Cooldowns and budget
 
+  func testReadinessLossClearsEvidenceButPreservesEarnedCooldown() {
+    let m = machine()
+    _ = m.observe(holding("cereal"), at: t0)
+    m.clearEvidence()
+    if case .fired = m.observe(holding("cereal"), at: t0.addingTimeInterval(1)).decision { XCTFail("Stale evidence triggered an interview") }
+    XCTAssertNotNil(fired(m.observe(holding("cereal"), at: t0.addingTimeInterval(2))))
+    m.endIntercept(at: t0.addingTimeInterval(30))
+    m.clearEvidence()
+    guard case .targetCoolingDown = m.observe(holding("cereal"), at: t0.addingTimeInterval(200)).decision else {
+      return XCTFail("Readiness loss erased a cooldown")
+    }
+  }
+
   func testTheSameTargetCannotRetriggerDuringItsCooldown() {
     let m = machine()
     _ = m.observe(holding("cereal"), at: t0)

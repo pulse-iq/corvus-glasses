@@ -96,6 +96,14 @@ final class LiveKitSession: NSObject, ObservableObject {
   /// Fields to attach to the next `start()`. Set by `LiveKitInterceptor` before
   /// dialling and cleared by it afterwards, so an ordinary call is unaffected.
   var pendingSessionContext: [String: String]?
+  var missionWorkerIdentity: String?
+  var missionCaptureSource: CaptureSource?
+  var missionEngine: IntelligenceEngine?
+  private var lifecycleGeneration = 0
+  var missionTransportConnected: Bool { room.connectionState == .connected }
+  var missionFrame: UIImage? { frameGrabber.latestImage() }
+  var hasFreshMissionFrame: Bool { frameGrabber.isFresh }
+  private var selectedSource: CaptureSource { missionCaptureSource ?? SettingsManager.shared.captureSource }
 
   func refreshAgentStatus() {
     guard state == .connected else {
@@ -124,9 +132,27 @@ final class LiveKitSession: NSObject, ObservableObject {
   private let frameGrabber = LatestFrameGrabber()
   private var grabberTrack: LocalVideoTrack?
 
+  /// Every frame the phone camera captures, with the rotation that makes it
+  /// upright. Called on the capture thread.
+  ///
+  /// The watcher rides this in phone mode. In glasses mode it rides the DAT
+  /// decoder instead, and the local track here is the buffer track fed by
+  /// `pushGlassesFrame` -- forwarding that too would hand the watcher every
+  /// glasses frame twice, so this stays nil while the glasses are the source.
+  var onPhoneFrame: ((CVPixelBuffer, CGImagePropertyOrientation) -> Void)? {
+    didSet { syncFrameForwarding() }
+  }
+
+  private func syncFrameForwarding() {
+    frameGrabber.onFrame = usingGlassesSource ? nil : onPhoneFrame
+  }
+
   private func attachGrabber(to track: LocalVideoTrack?) {
     if let old = grabberTrack { old.remove(videoRenderer: frameGrabber) }
     grabberTrack = track
+    // Both callers decide `usingGlassesSource` before building the track, so
+    // this is the moment the forwarding decision is known.
+    syncFrameForwarding()
     if let track { track.add(videoRenderer: frameGrabber) }
   }
 
@@ -209,15 +235,15 @@ final class LiveKitSession: NSObject, ObservableObject {
     // before anyone visits Settings, and `stop()` calls straight back here
     // without clearing `previewTrack`, so the guard below returns early forever
     // and the glasses track is never built.
-    if previewTrack != nil, (SettingsManager.shared.captureSource == .glasses) != usingGlassesSource {
+    if previewTrack != nil, (selectedSource == .glasses) != usingGlassesSource {
       await stopPreview()
     }
     guard state == .disconnected || isFailed, previewTrack == nil else { return }
     let track: LocalVideoTrack
     // Otherwise only set in start(); without it a call-free preview renders
     // neither frames nor the waiting placeholder, just black.
-    usingGlassesSource = SettingsManager.shared.captureSource == .glasses
-    if SettingsManager.shared.captureSource == .glasses {
+    usingGlassesSource = selectedSource == .glasses
+    if selectedSource == .glasses {
       // Glasses preview is a buffer track fed by pushGlassesFrame; there is
       // no capture device to open.
       track = LocalVideoTrack.createBufferTrack(name: "glasses-preview", source: .camera)
@@ -276,10 +302,13 @@ final class LiveKitSession: NSObject, ObservableObject {
       state = .failed("Gateway not configured. Check Settings.")
       return
     }
+    lifecycleGeneration += 1
+    let generation = lifecycleGeneration
     state = .connecting
     await stopPreview()
+    guard generation == lifecycleGeneration, !Task.isCancelled else { return }
 
-    usingGlassesSource = SettingsManager.shared.captureSource == .glasses
+    usingGlassesSource = selectedSource == .glasses
 
     // Named so a failure says which call threw. These three fail in completely
     // different places -- the token endpoint, the room, the microphone -- and
@@ -289,6 +318,13 @@ final class LiveKitSession: NSObject, ObservableObject {
     var stage = "ticket"
     do {
       let ticket = try await fetchTicket()
+      guard generation == lifecycleGeneration, !Task.isCancelled else { return }
+      if pendingSessionContext?["mode"] == "mission" {
+        guard ticket.missionVersion == 1, let identity = ticket.workerIdentity, !identity.isEmpty else {
+          throw NSError(domain: "Mission", code: 1, userInfo: [NSLocalizedDescriptionKey: "This gateway does not support mission protocol v1. Update the gateway and worker."])
+        }
+        missionWorkerIdentity = identity
+      }
       // Before connect, not after: the worker is dispatched at room creation
       // and starts talking as soon as it sees a participant, so a handler
       // registered further down -- behind mic setup and a published video
@@ -297,10 +333,13 @@ final class LiveKitSession: NSObject, ObservableObject {
       await registerCaptionHandler()
       await registerCardHandler()
       await registerTranscriptHandler()
+      guard generation == lifecycleGeneration, !Task.isCancelled else { return }
       stage = "connect"
       try await room.connect(url: ticket.url, token: ticket.token)
+      guard generation == lifecycleGeneration, !Task.isCancelled else { await room.disconnect(); return }
       stage = "microphone"
       try await room.localParticipant.setMicrophone(enabled: true)
+      guard generation == lifecycleGeneration, !Task.isCancelled else { await room.disconnect(); return }
       // Camera failure (simulator, permission denied) degrades to voice-only
       // rather than killing the call.
       do {
@@ -317,6 +356,7 @@ final class LiveKitSession: NSObject, ObservableObject {
           // preview capturer this track replaces.
           glassesCapturerBox.capturer = track.capturer as? BufferCapturer
           try await track.start()
+          guard generation == lifecycleGeneration, !Task.isCancelled else { try? await track.stop(); return }
           _ = try await room.localParticipant.publish(videoTrack: track)
           localVideoTrack = track
         } else {
@@ -343,6 +383,7 @@ final class LiveKitSession: NSObject, ObservableObject {
           error: error.localizedDescription,
           note: usingGlassesSource ? "glasses buffer track" : "phone back camera"))
       }
+      guard generation == lifecycleGeneration, !Task.isCancelled else { await stop(restartPreview: false); return }
       state = .connected
       resetZoom()
       refreshAgentStatus()
@@ -356,15 +397,18 @@ final class LiveKitSession: NSObject, ObservableObject {
         kind: "livekit_connect_failed", at: Date(),
         error: error.localizedDescription,
         note: "stage=\(stage) connectionState=\(room.connectionState)"))
+      guard generation == lifecycleGeneration, !Task.isCancelled else { return }
       state = .failed("\(stage): \(error.localizedDescription)")
       agentStatus = .none
       await room.disconnect()
       // Even a failed call leaves the user with eyes.
-      await startPreview()
+      if pendingSessionContext?["mode"] != "mission" { await startPreview() }
     }
   }
 
-  func stop() async {
+  func stop(restartPreview: Bool = true) async {
+    lifecycleGeneration += 1
+    await stopCapture()
     await room.disconnect()
     localVideoTrack = nil
     state = .disconnected
@@ -376,7 +420,23 @@ final class LiveKitSession: NSObject, ObservableObject {
     card = nil
     glassesCapturerBox.sawFrame = false
     hasGlassesFrame = false
-    await startPreview()
+    if restartPreview { await startPreview() }
+  }
+
+  func stopCapture() async {
+    lifecycleGeneration += 1
+    // Silence subscribed agent speech before awaiting any network cleanup.
+    for participant in room.remoteParticipants.values {
+      for publication in participant.audioTracks {
+        (publication.track as? RemoteAudioTrack)?.volume = 0
+      }
+    }
+    attachGrabber(to: nil)
+    frameGrabber.clear()
+    glassesCapturerBox.capturer = nil
+    try? await room.localParticipant.setMicrophone(enabled: false)
+    if let track = localVideoTrack { try? await track.stop() }
+    await stopPreview()
   }
 
   // MARK: - Captions (transcription text streams)
@@ -482,6 +542,8 @@ final class LiveKitSession: NSObject, ObservableObject {
     let url: String
     let room: String
     let token: String
+    let missionVersion: Int?
+    let workerIdentity: String?
   }
 
   /// The gateway holds the LiveKit secret and mints a short-lived per-user
@@ -497,14 +559,18 @@ final class LiveKitSession: NSObject, ObservableObject {
     request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     var payload: [String: Any] = [
-      "engine": SettingsManager.shared.intelligenceEngine.rawValue
+      "engine": (missionEngine ?? SettingsManager.shared.intelligenceEngine).rawValue
     ]
     // Corvus rides along here: the token endpoint copies this into the room
     // token's participant metadata, which the worker already reads. Sending the
     // interceptor's whole instruction text rather than a study id keeps the
     // research instrument on the phone, where the study lives, instead of
     // splitting it across a Python worker that would then need its own copy.
-    if let context = pendingSessionContext { payload["corvus"] = context }
+    if let context = pendingSessionContext {
+      var metadata: [String: Any] = context
+      if context["mode"] == "mission" { metadata["version"] = 1 }
+      payload["corvus"] = metadata
+    }
     request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
     let (data, response) = try await URLSession.shared.data(for: request)
@@ -565,6 +631,17 @@ extension LiveKitSession: RoomDelegate {
 final class LatestFrameGrabber: VideoRenderer {
   private let lock = NSLock()
   private var latestFrame: VideoFrame?
+  private var receivedAt: Double = 0
+  var isFresh: Bool { lock.lock(); defer { lock.unlock() }; return receivedAt > 0 && ProcessInfo.processInfo.systemUptime - receivedAt < 6 }
+  func clear() { lock.lock(); latestFrame = nil; receivedAt = 0; lock.unlock() }
+  private var _onFrame: ((CVPixelBuffer, CGImagePropertyOrientation) -> Void)?
+
+  /// Live tap on the track, for the watcher. Set from the main actor, read on
+  /// the capture thread, hence the lock.
+  var onFrame: ((CVPixelBuffer, CGImagePropertyOrientation) -> Void)? {
+    get { lock.lock(); defer { lock.unlock() }; return _onFrame }
+    set { lock.lock(); _onFrame = newValue; lock.unlock() }
+  }
 
   var isAdaptiveStreamEnabled: Bool { false }
   var adaptiveStreamSize: CGSize { .zero }
@@ -574,7 +651,22 @@ final class LatestFrameGrabber: VideoRenderer {
   func render(frame: VideoFrame) {
     lock.lock()
     latestFrame = frame
+    receivedAt = ProcessInfo.processInfo.systemUptime
+    let onFrame = _onFrame
     lock.unlock()
+    // Camera frames wrap a CVPixelBuffer already, so this is an unwrap, not a
+    // conversion. The watcher's own sampler throttles downstream.
+    guard let onFrame, let pixelBuffer = frame.toCVPixelBuffer() else { return }
+    onFrame(pixelBuffer, Self.orientation(for: frame.rotation))
+  }
+
+  static func orientation(for rotation: VideoRotation) -> CGImagePropertyOrientation {
+    switch rotation {
+    case ._90: return .right
+    case ._180: return .down
+    case ._270: return .left
+    default: return .up
+    }
   }
 
   func render(frame: VideoFrame, captureDevice: AVCaptureDevice?, captureOptions: VideoCaptureOptions?) {
@@ -586,16 +678,11 @@ final class LatestFrameGrabber: VideoRenderer {
     let frame = latestFrame
     lock.unlock()
     guard let frame, let pixelBuffer = frame.toCVPixelBuffer() else { return nil }
-    var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
     // The sensor delivers landscape buffers; renderers apply the frame's
     // rotation tag at display time. Converting raw pixels skips that step, so
     // apply it here or every portrait pin comes out sideways.
-    switch frame.rotation {
-    case ._90: ciImage = ciImage.oriented(.right)
-    case ._180: ciImage = ciImage.oriented(.down)
-    case ._270: ciImage = ciImage.oriented(.left)
-    default: break
-    }
+    let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+      .oriented(Self.orientation(for: frame.rotation))
     let context = CIContext()
     guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
     return UIImage(cgImage: cgImage)

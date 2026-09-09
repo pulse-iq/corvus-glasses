@@ -23,6 +23,8 @@ struct StreamSessionView: View {
   let wearables: WearablesInterface?
   private let wearablesViewModel: WearablesViewModel?
   @StateObject private var viewModel: StreamSessionViewModel
+  @StateObject private var mission = MissionCoordinator()
+  private var missionMode: Bool { !UserDefaults.standard.bool(forKey: "corvus.legacySessionMode") }
   @StateObject private var liveKit = LiveKitSession()
   /// The Corvus watcher. Watches the same glasses frames the call publishes
   /// and decides when a pickup is worth interrupting for.
@@ -70,6 +72,108 @@ struct StreamSessionView: View {
   }
 
   var body: some View {
+    if missionMode { missionView } else { legacyView }
+  }
+
+  private var missionView: some View {
+    ZStack {
+      LiveKitStreamView(session: liveKit, glassesPlaceholder: glassesPlaceholder, missionControls: true)
+      VStack(spacing: 12) {
+        HStack {
+          Text(StudyStore.shared.active.name).font(.headline)
+          Spacer()
+          Button { showSettings = true } label: { Image(systemName: "gearshape.fill") }.disabled(mission.isActive)
+        }
+        .padding()
+        Spacer()
+        if let error = mission.errorMessage { Text(error).font(.footnote).multilineTextAlignment(.center) }
+        Text(missionStatus).font(.headline)
+        if let status = mission.recordingStatus { Label("Recording: \(status)", systemImage: "record.circle").font(.subheadline) }
+        if mission.isActive {
+          Button("End Mission") { Task { await mission.end() } }
+            .buttonStyle(.borderedProminent).tint(.red).disabled(mission.lifecycle.phase == .ending)
+        } else {
+          Text(captureSource == .glasses ? "Glasses camera" : "iPhone camera").font(.subheadline)
+          Button("Start Mission") {
+            mission.start(study: StudyStore.shared.active, source: captureSource,
+              engine: IntelligenceEngine(rawValue: intelligenceRaw) ?? .gemini,
+              startDAT: { await viewModel.handleStartStreaming() })
+          }.buttonStyle(.borderedProminent)
+          if captureSource == .glasses, let wearablesViewModel, wearablesViewModel.registrationState != .registered {
+            HomeScreenView(viewModel: wearablesViewModel).frame(maxHeight: 240)
+          }
+        }
+      }.padding(24).foregroundStyle(.white)
+    }
+    .sheet(isPresented: $showSettings) { SettingsView() }
+    .task {
+      viewModel.onDecodedFrame = { [weak liveKit] buffer in liveKit?.pushGlassesFrame(buffer) }
+      viewModel.onAnalysisFrame = { _ in FrameHeartbeat.shared.tick() }
+      // The glasses stream belongs to this view, not to the mission: it opens
+      // before Start Mission so the wearer sees the world, and it outlives End
+      // Mission so the screen does not go dark for the 15-30 s DAT needs to
+      // come back. End Mission still stops room publication and drops the room.
+      mission.attach(session: liveKit, watcher: watcher, stopDAT: {})
+    }
+    .task(id: missionPreviewKey) { await startMissionPreview() }
+    .onChange(of: scenePhase) { phase in
+      // As in the legacy view: the glasses camera grant lands in a second Meta
+      // AI hand-off and is still invisible to checkPermissionStatus at the
+      // instant the app foregrounds, so poll without requesting.
+      guard phase == .active, captureSource == .glasses, !viewModel.isStreaming else { return }
+      glassesResumeTask?.cancel()
+      glassesResumeTask = Task {
+        for _ in 0..<10 {
+          if Task.isCancelled || viewModel.isStreaming || captureSource != .glasses { return }
+          if await viewModel.resumeIfPermitted() { return }
+          try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+      }
+    }
+    .onDisappear { glassesResumeTask?.cancel() }
+  }
+
+  /// Changes when a mission ends or the capture source changes, so the preview
+  /// task runs again exactly then.
+  private var missionPreviewKey: String { "\(mission.isActive)|\(captureSourceRaw)" }
+
+  /// Between missions: a local preview track on the screen and, for the
+  /// glasses, the DAT stream that feeds it. Start Mission hands the same
+  /// stream to the room; when the room is gone this runs again.
+  private func startMissionPreview() async {
+    guard !mission.isActive else { return }
+    if captureSource == .iPhoneCamera, viewModel.isStreaming { await viewModel.stopSession() }
+    await liveKit.startPreview()
+    guard captureSource == .glasses, let wearablesViewModel else { return }
+    // Registration can finish after this view appears (it goes through the
+    // Meta AI app), so keep looking for it; once registered, the start
+    // attempts run on the same cadence the legacy view shipped with.
+    for _ in 0..<12 {
+      guard !Task.isCancelled, !mission.isActive, captureSource == .glasses else { return }
+      var attempted = false
+      if wearablesViewModel.registrationState == .registered || wearablesViewModel.hasMockDevice {
+        await viewModel.handleStartStreaming()
+        if viewModel.isStreaming { return }
+        attempted = true
+      }
+      try? await Task.sleep(nanoseconds: attempted ? 10_000_000_000 : 2_000_000_000)
+    }
+  }
+
+  private var missionStatus: String {
+    switch mission.lifecycle.phase {
+    case .idle: return "Ready to start"
+    case .starting: return "Starting mission…"
+    case .welcome: return "Welcome"
+    case .shopping: return "Mission active"
+    case .interviewing: return "Interviewing"
+    case .reconnecting: return "Reconnecting…"
+    case .ending: return "Ending mission…"
+    case .ended: return "Mission ended"
+    }
+  }
+
+  private var legacyView: some View {
     ZStack {
       if captureSource == .iPhoneCamera {
         LiveKitStreamView(session: liveKit)
@@ -148,6 +252,14 @@ struct StreamSessionView: View {
         // even when the watcher is stopped or another screen is up.
         FrameHeartbeat.shared.tick()
         watcher?.submit(image: image)
+      }
+      // Phone mode: the back camera belongs to the LiveKit session, which is
+      // the only thing that sees its frames. Without this tap the watcher sat
+      // at 0/0 -- started, and never handed a single frame.
+      liveKit.onPhoneFrame = { [weak watcher] pixelBuffer, orientation in
+        Task { @MainActor in
+          watcher?.submit(pixelBuffer: pixelBuffer, orientation: orientation)
+        }
       }
       // Realtime intercepts run through this screen's room.
       watcher.attach(liveKit: liveKit)

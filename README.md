@@ -27,8 +27,21 @@ A research prototype, iOS only. The Android sample in this repo is upstream's
 and carries no Corvus code.
 
 It runs on a phone paired with Meta Ray-Ban glasses in Developer Mode. There is
-no App Store build and no backend of its own — sessions are written to the
-phone and pulled off with `devicectl`.
+no App Store build. This repository contains the iOS app, the LiveKit worker,
+and a standalone Vercel backend. Missions save local records and cloud recordings.
+
+## Repository structure
+
+| Directory | Responsibility | Deployment |
+|---|---|---|
+| `samples/CameraAccess/` | iOS app, camera, detection, mission controls | Xcode/device |
+| `agent/` | Welcome, product interviews, mission recording | LiveKit Cloud |
+| `web/` | Room tokens, mission lifecycle/status, cleanup watchdog | Vercel, Root Directory `web` |
+| `gateway/` | Retained upstream action gateway | Optional; not the mission backend |
+
+The web service has its own npm lockfile and environment. It does not depend on
+another repository. See [web/README.md](web/README.md) for local setup and Vercel
+configuration. Deploying `web/` does not deploy the Python worker.
 
 ## Setup
 
@@ -48,7 +61,7 @@ By hand, the short version:
 ```bash
 cd samples/CameraAccess
 cp CameraAccess/Secrets.swift.example CameraAccess/Secrets.swift
-# put a Gemini API key in Secrets.swift          https://aistudio.google.com/apikey
+# fill in Gemini API key, web service URL, and shared token in Secrets.swift
 open CameraAccess.xcodeproj                      # signing is already configured
 ```
 

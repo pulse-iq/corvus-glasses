@@ -28,8 +28,13 @@ final class FrameSampler {
     lastSampledAt = nil
   }
 
-  func jpeg(from pixelBuffer: CVPixelBuffer) -> Data? {
-    encode(CIImage(cvPixelBuffer: pixelBuffer))
+  /// `orientation` is the rotation that makes the buffer upright. Camera
+  /// sensors deliver landscape pixels with a rotation tag the renderer applies
+  /// at display time; the model gets no such tag, so it is baked in here.
+  func jpeg(from pixelBuffer: CVPixelBuffer,
+            orientation: CGImagePropertyOrientation = .up) -> Data? {
+    let image = CIImage(cvPixelBuffer: pixelBuffer)
+    return encode(orientation == .up ? image : image.oriented(orientation))
   }
 
   func jpeg(from image: UIImage) -> Data? {
