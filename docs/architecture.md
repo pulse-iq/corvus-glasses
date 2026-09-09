@@ -20,6 +20,28 @@ worth interrupting*. The **intercept** takes that decision and conducts the
 conversation. They meet at a single value, `Trigger`, and nothing downstream of
 it needs to know which primitive fired or which model saw it.
 
+## Mission ownership
+
+In the participant flow, `MissionCoordinator` owns the room and capture lifetime.
+Start Mission snapshots the study, camera source, and voice engine. The worker
+starts one recording, speaks a welcome, then waits for the existing watcher to
+send interview briefs through that room. Individual interviews keep the same
+study prompts and trigger policy, but `end_intercept` now returns the mission to
+quiet shopping rather than deleting its room.
+
+Readiness gates detection during setup, voice preparation, and reconnects. A
+readiness loss clears accumulated visual evidence while preserving earned
+cooldowns. Async callbacks carry a generation so a late detection or connection
+cannot restart an ended mission. End Mission stops publication and camera capture.
+There is no mission time limit and no timer is shown; the safety nets are the
+worker's phone-heartbeat timeout and the gateway's worker-presence check.
+
+The mission worker is in `agent/corvus_mission.py`, its voice adapter in
+`agent/corvus_mission_voice.py`, and recording/storage adapters in
+`agent/corvus_mission_storage.py`. Legacy standalone interviews remain in
+`agent/corvus_intercept.py`. See [realtime.md](realtime.md) for the standalone `web/` token
+service and protocol rollout requirements.
+
 ## The watcher
 
 All on-device except the vision call. No server is involved.
@@ -146,6 +168,7 @@ earbuds will otherwise win the route and nothing will say so.
 | `Corvus/*Interceptor.swift` | the three implementations |
 | `Corvus/CorvusLog.swift` | the session log |
 | `agent/` | the deployed realtime worker |
+| `web/` | standalone Vercel mission/token service and cleanup watchdog |
 | `corvus-tools/` | offline detector benchmark |
 
 Corvus is a fork of [VisionClaw](https://github.com/Intent-Lab/VisionClaw) and

@@ -64,8 +64,9 @@ repo root -- one file, gitignored, which Phase 3 reads to populate
 [ -f .env ] && awk -F= '/^[A-Z_]+=/ && $2 != "" {print $1 " set"}' .env || echo "no .env"
 ```
 
-`GOOGLE_API_KEY` (or `GEMINI_API_KEY`) is the only one required.
-`CORVUS_GLASSES_TOKEN` is needed only for the realtime interceptor.
+`GOOGLE_API_KEY` (or `GEMINI_API_KEY`) is required for detection.
+`CORVUS_GLASSES_TOKEN` and `CORVUS_GLASSES_URL` are required for realtime missions.
+The endpoint is this repository’s `web/` Vercel deployment; see `web/README.md`.
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are for detector benchmarking and can
 stay empty.
 
@@ -117,6 +118,9 @@ Batch the whole ask into one question:
    never committed. If the user does not have one, say so plainly and tell them
    to switch Settings -> Corvus -> Intercepts -> Style to Conversational, which
    needs no server.
+3. **`CORVUS_GLASSES_URL`** -- the standalone `web/` deployment URL, including
+   `/api/glasses`, without a trailing slash. If it is not deployed yet, follow
+   `web/README.md` first. Do not reuse the former main-app preview URL.
 
 Ask about signing **only if the Phase 1 team check did not match**. In that case
 the user is building from outside the team and needs both their own team id
@@ -164,6 +168,10 @@ for placeholder, value in (
 ):
     if value:
         t = t.replace(placeholder, value)
+if env.get("CORVUS_GLASSES_URL"):
+    import json
+    t = re.sub(r'(static let cloudGatewayURL\s*=\s*)"[^"\n]*"',
+               lambda m: m.group(1) + json.dumps(env["CORVUS_GLASSES_URL"].rstrip('/')), t)
 if env.get("CORVUS_GLASSES_TOKEN"):
     t = re.sub(r'(static let cloudGatewayToken = )""',
                lambda m: m.group(1) + '"' + env["CORVUS_GLASSES_TOKEN"] + '"', t)

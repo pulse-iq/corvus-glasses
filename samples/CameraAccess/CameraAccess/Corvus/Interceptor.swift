@@ -74,6 +74,10 @@ struct InterceptRecord: Codable, Identifiable, Equatable {
   /// bucket is not addressable from the phone, so this is a pointer rather
   /// than a path: it is how a record found in `intercepts/` names its video.
   var recordingKey: String?
+  var missionID: String?
+  var segmentID: String?
+  var recordingOffsetSeconds: Double?
+  var authoritativeTurns: [MissionTranscriptTurn]?
 
   var duration: TimeInterval? {
     endedAt.map { $0.timeIntervalSince(triggeredAt) }

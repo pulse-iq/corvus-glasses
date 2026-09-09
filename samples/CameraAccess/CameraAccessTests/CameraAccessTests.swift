@@ -1,3 +1,4 @@
+#if canImport(MWDATMockDevice)
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -156,3 +157,5 @@ class ViewModelIntegrationTests: XCTestCase {
     XCTAssertTrue([.stopped, .waiting].contains(viewModel.streamingStatus))
   }
 }
+
+#endif

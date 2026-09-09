@@ -269,7 +269,10 @@ class StreamSessionViewModel: ObservableObject {
 
   @Published var glassesIssue: GlassesIssue?
 
+  private var captureGeneration = 0
+
   func handleStartStreaming() async {
+    let generation = captureGeneration
     glassesIssue = nil
     guard let wearables else {
       glassesIssue = .sdkUnavailable
@@ -278,11 +281,13 @@ class StreamSessionViewModel: ObservableObject {
     let permission = Permission.camera
     do {
       let status = try await wearables.checkPermissionStatus(permission)
+      guard generation == captureGeneration, !Task.isCancelled else { return }
       if status == .granted {
         await startSession()
         return
       }
       let requestStatus = try await wearables.requestPermission(permission)
+      guard generation == captureGeneration, !Task.isCancelled else { return }
       if requestStatus == .granted {
         await startSession()
         return
@@ -301,7 +306,9 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func startSession() async {
+    let generation = captureGeneration
     await streamSession?.start()
+    if generation != captureGeneration || Task.isCancelled { await streamSession?.stop() }
   }
 
   /// Starts only if the glasses camera grant is already visible, and reports
@@ -329,6 +336,7 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func stopSession() async {
+    captureGeneration += 1
     await streamSession?.stop()
   }
 
