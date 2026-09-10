@@ -131,11 +131,11 @@ enum InterceptorKind: String, CaseIterable, Identifiable {
   }
 
   @MainActor
-  func make(liveKit: LiveKitSession? = nil) -> Interceptor? {
+  func make(media: (any RealtimeMedia)? = nil) -> Interceptor? {
     switch self {
     case .scripted: return ScriptedInterceptor()
     case .conversational: return ConversationalInterceptor()
-    case .liveKit: return LiveKitInterceptor(session: liveKit)
+    case .liveKit: return LiveKitInterceptor(session: media)
     }
   }
 }

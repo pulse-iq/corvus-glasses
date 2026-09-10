@@ -165,6 +165,7 @@ earbuds will otherwise win the route and nothing will say so.
 | `Corvus/WatcherCoordinator.swift` | wiring: frames in, intercepts out |
 | `Corvus/Study.swift`, `Corvus/WatchItem.swift` | the study config shape |
 | `Corvus/Interceptor.swift` | the seam, and the record format |
+| `Corvus/RealtimeMedia.swift`, `Corvus/LiveKitRealtimeMedia.swift` | the only door into upstream's LiveKit session |
 | `Corvus/*Interceptor.swift` | the three implementations |
 | `Corvus/CorvusLog.swift` | the session log |
 | `agent/` | the deployed realtime worker |

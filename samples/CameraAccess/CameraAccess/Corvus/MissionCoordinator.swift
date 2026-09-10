@@ -18,7 +18,7 @@ final class MissionCoordinator: ObservableObject, Interceptor {
   @Published private(set) var recordingStatus: String?
   @Published private(set) var errorMessage: String?
   var isActive: Bool { lifecycle.phase != .idle && lifecycle.phase != .ended }
-  private var session: LiveKitSession?
+  private var session: (any RealtimeMedia)?
   private var transport: LiveKitMissionTransport?
   private weak var watcher: WatcherCoordinator?
   private var stopDAT: (() async -> Void)?
@@ -35,12 +35,12 @@ final class MissionCoordinator: ObservableObject, Interceptor {
   private var setupUptime = 0.0
   private var lostReadinessAt: Double?
 
-  func attach(session: LiveKitSession, watcher: WatcherCoordinator, stopDAT: @escaping () async -> Void) {
+  func attach(session: any RealtimeMedia, watcher: WatcherCoordinator, stopDAT: @escaping () async -> Void) {
     guard self.session == nil else { return }
     self.session = session
     self.watcher = watcher
     self.stopDAT = stopDAT
-    let transport = LiveKitMissionTransport(session: session)
+    let transport = LiveKitMissionTransport(media: session)
     self.transport = transport
     transport.receive = { [weak self] event in self?.receive(event) }
     watcher.setMissionReady(false)
@@ -54,9 +54,10 @@ final class MissionCoordinator: ObservableObject, Interceptor {
     recordingStatus = nil; errorMessage = nil; lostReadinessAt = nil
     setupUptime = ProcessInfo.processInfo.systemUptime
     watcher.use(study); watcher.interceptor = self; watcher.setMissionReady(false); watcher.start()
-    session.missionCaptureSource = source; session.missionEngine = engine
-    session.pendingSessionContext = ["mode": "mission", "version": "1", "missionId": missionID,
-      "segmentId": segmentID, "studyId": study.id, "sessionId": CorvusLog.shared.sessionName]
+    session.callContext = RealtimeCallContext(
+      metadata: ["mode": "mission", "version": "1", "missionId": missionID,
+        "segmentId": segmentID, "studyId": study.id, "sessionId": CorvusLog.shared.sessionName],
+      source: source, engine: engine)
     do { try persist() } catch {
       errorMessage = error.localizedDescription
       Task { await self.end(reason: "persistence_failed") }; return
@@ -73,12 +74,12 @@ final class MissionCoordinator: ObservableObject, Interceptor {
         guard let self, generation == self.lifecycle.generation, !Task.isCancelled else { return }
         if source == .glasses { await startDAT() }
         guard generation == self.lifecycle.generation, !Task.isCancelled else { await self.stopDAT?(); return }
-        if let media = self.media { await media.connect() } else { await session.start() }
+        if let media = self.media { await media.connect() } else { await session.connect() }
         guard generation == self.lifecycle.generation, !Task.isCancelled else {
-          if let media = self.media { await media.disconnect() } else { await session.stop(restartPreview: false) }
+          if let media = self.media { await media.disconnect() } else { await session.disconnect(restartPreview: false) }
           return
         }
-        if case .failed(let why) = session.state { self.errorMessage = why; Task { await self.end(reason: "setup_failed") } }
+        if case .failed(let why) = session.linkState { self.errorMessage = why; Task { await self.end(reason: "setup_failed") } }
       } catch { self?.errorMessage = error.localizedDescription; Task { await self?.end(reason: "setup_failed") } }
     }
   }
@@ -90,7 +91,7 @@ final class MissionCoordinator: ObservableObject, Interceptor {
       errorMessage = "Mission setup timed out. Check camera, agent, and recording availability."
       await end(reason: "setup_timeout"); return
     }
-    let ready = session.state == .connected && session.missionTransportConnected && session.agentStatus != .left && session.hasFreshMissionFrame && session.localVideoTrack != nil
+    let ready = session.linkState == .connected && session.isTransportConnected && session.agentPresence != .left && session.hasFreshFrame && session.videoSource != nil
     watcher?.setMissionReady(ready && serverShopping && recordingStatus == "recording")
     if !ready, lifecycle.started {
       serverShopping = false
@@ -102,7 +103,7 @@ final class MissionCoordinator: ObservableObject, Interceptor {
       try? await transport?.send(command("sync"))
     }
     guard generation == lifecycle.generation, !Task.isCancelled else { return }
-    if ready, let image = session.missionFrame { watcher?.submit(image: image) }
+    if ready, let image = session.latestFrame { watcher?.submit(image: image) }
     var payload = MissionPayload(); payload.cameraReady = ready; payload.microphoneReady = ready
     try? await transport?.send(command("client_ready", payload: payload))
   }
@@ -164,7 +165,7 @@ final class MissionCoordinator: ObservableObject, Interceptor {
       if let phase = p.phase {
         lifecycle.apply(phase: phase == .ended ? .reconnecting : phase, generation: lifecycle.generation)
         serverShopping = phase == .shopping && p.voiceReady == true && recordingStatus == "recording"
-        watcher?.setMissionReady(serverShopping && session?.hasFreshMissionFrame == true)
+        watcher?.setMissionReady(serverShopping && session?.hasFreshFrame == true)
       }
       if event.type == "mission_ended" || p.phase == .ended {
         // Terminal state still needs local media cleanup.
@@ -267,9 +268,9 @@ final class MissionCoordinator: ObservableObject, Interceptor {
       Task { try? await transport?.send(message) }
       await endOnGateway(missionID: missionID, reason: reason)
     }
-    if let media { await media.disconnect() } else { await session?.stop(restartPreview: false) }
+    if let media { await media.disconnect() } else { await session?.disconnect(restartPreview: false) }
     await startTask?.value
-    session?.pendingSessionContext = nil; session?.missionCaptureSource = nil; session?.missionEngine = nil
+    session?.callContext = nil
     lifecycle.finishedEnding()
     let endedMission = missionID
     guard media == nil else { try? persist(); return }

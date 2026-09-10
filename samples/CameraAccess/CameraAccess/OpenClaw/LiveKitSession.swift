@@ -118,16 +118,15 @@ final class LiveKitSession: NSObject, ObservableObject {
 
   var isActive: Bool { state == .connected || state == .connecting }
 
-  /// Fields to attach to the next `start()`. Set by `LiveKitInterceptor` before
-  /// dialling and cleared by it afterwards, so an ordinary call is unaffected.
-  var pendingSessionContext: [String: String]?
-  var missionWorkerIdentity: String?
-  var missionCaptureSource: CaptureSource?
-  var missionEngine: IntelligenceEngine?
-  var missionTransportConnected: Bool { room.connectionState == .connected }
-  var missionFrame: UIImage? { frameGrabber.latestImage() }
-  var hasFreshMissionFrame: Bool { frameGrabber.isFresh }
-  private var selectedSource: CaptureSource { missionCaptureSource ?? SettingsManager.shared.captureSource }
+  /// Corvus seam. What the next `start()` tells the gateway, set before
+  /// dialling and cleared afterwards so an ordinary call is unaffected, and
+  /// what the ticket said back. Everything else Corvus reads goes through
+  /// `RealtimeMedia` (Corvus/LiveKitRealtimeMedia.swift), not this class.
+  var callContext: RealtimeCallContext?
+  private(set) var workerIdentity: String?
+  var latestGrabbedFrame: UIImage? { frameGrabber.latestImage() }
+  var hasFreshGrabbedFrame: Bool { frameGrabber.isFresh }
+  private var selectedSource: CaptureSource { callContext?.source ?? SettingsManager.shared.captureSource }
 
   func refreshAgentStatus() {
     guard state == .connected else {
@@ -385,11 +384,11 @@ final class LiveKitSession: NSObject, ObservableObject {
       // wrong camera into this room; treat it like a superseded start.
       guard generation == startGeneration, !Task.isCancelled,
             usingGlassesSource == (selectedSource == .glasses) else { return }
-      if pendingSessionContext?["mode"] == "mission" {
+      if callContext?.isMission == true {
         guard ticket.missionVersion == 1, let identity = ticket.workerIdentity, !identity.isEmpty else {
           throw NSError(domain: "Mission", code: 1, userInfo: [NSLocalizedDescriptionKey: "This gateway does not support mission protocol v1. Update the gateway and worker."])
         }
-        missionWorkerIdentity = identity
+        workerIdentity = identity
       }
       // Before connect, not after: the worker is dispatched at room creation
       // and starts talking as soon as it sees a participant, so a handler
@@ -509,7 +508,7 @@ final class LiveKitSession: NSObject, ObservableObject {
       agentStatus = .none
       await room.disconnect()
       // Even a failed call leaves the user with eyes.
-      if pendingSessionContext?["mode"] != "mission" { await startPreview() }
+      if callContext?.isMission != true { await startPreview() }
     }
   }
 
@@ -774,7 +773,7 @@ final class LiveKitSession: NSObject, ObservableObject {
     request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     var payload: [String: Any] = [
-      "engine": (missionEngine ?? SettingsManager.shared.intelligenceEngine).rawValue,
+      "engine": (callContext?.engine ?? SettingsManager.shared.intelligenceEngine).rawValue,
       // Capture mode travels with the ticket so upstream's study can label a
       // session even when no video track is ever published. The Corvus
       // gateway ignores it; carried for parity with upstream's wire format.
@@ -785,9 +784,9 @@ final class LiveKitSession: NSObject, ObservableObject {
     // interceptor's whole instruction text rather than a study id keeps the
     // research instrument on the phone, where the study lives, instead of
     // splitting it across a Python worker that would then need its own copy.
-    if let context = pendingSessionContext {
-      var metadata: [String: Any] = context
-      if context["mode"] == "mission" { metadata["version"] = 1 }
+    if let context = callContext {
+      var metadata: [String: Any] = context.metadata
+      if context.isMission { metadata["version"] = 1 }
       payload["corvus"] = metadata
     }
     request.httpBody = try JSONSerialization.data(withJSONObject: payload)

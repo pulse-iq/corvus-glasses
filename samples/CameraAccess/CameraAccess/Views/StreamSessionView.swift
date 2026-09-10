@@ -265,7 +265,7 @@ struct StreamSessionView: View {
         }
       }
       // Realtime intercepts run through this screen's room.
-      watcher.attach(liveKit: liveKit)
+      watcher.attach(media: liveKit)
       if watchHere { watcher.start() }
       if CorvusConfig.useLiveKitCall {
         if captureSource == .iPhoneCamera {

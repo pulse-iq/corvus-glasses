@@ -21,7 +21,7 @@ import Foundation
 final class LiveKitInterceptor: Interceptor {
   let name = "LiveKit realtime"
 
-  private weak var session: LiveKitSession?
+  private weak var session: (any RealtimeMedia)?
   private let log = CorvusLog.shared
   /// The agent's transcript, built from ordered conversation items on the
   /// worker rather than reassembled here from two independent caption streams.
@@ -35,7 +35,7 @@ final class LiveKitInterceptor: Interceptor {
   private var recordingKey: String?
   private var cancelled = false
 
-  init(session: LiveKitSession?) {
+  init(session: (any RealtimeMedia)?) {
     self.session = session
   }
 
@@ -73,7 +73,7 @@ final class LiveKitInterceptor: Interceptor {
 
     // Everything the worker needs for this one intercept. It reads participant
     // metadata already; these are extra keys in the same place.
-    session.pendingSessionContext = [
+    session.callContext = RealtimeCallContext(metadata: [
       "mode": "intercept",
       "studyId": study.id,
       "itemId": trigger.subject.targetID,
@@ -83,8 +83,8 @@ final class LiveKitInterceptor: Interceptor {
       // The worker files the recording under this, so every intercept from one
       // run of the app lands beside the log directory it belongs to.
       "sessionId": log.sessionName,
-    ]
-    defer { session.pendingSessionContext = nil }
+    ])
+    defer { session.callContext = nil }
 
     // Both sides of the conversation arrive as transcription streams, so the
     // transcript is a by-product of the call rather than something to capture.
@@ -96,17 +96,15 @@ final class LiveKitInterceptor: Interceptor {
     }
     defer { session.onTranscript = nil }
 
-    await session.start()
-    if case .failed(let why) = session.state {
+    await session.connect()
+    if case .failed(let why) = session.linkState {
       record.abortReason = why
       return finish(record)
     }
     // Read after the room is up, because publishing video is allowed to fail
     // without failing the call: "none" here is the signature of an intercept
     // that sounded perfect and recorded a black rectangle.
-    record.videoSource = session.localVideoTrack == nil
-      ? "none"
-      : (session.usingGlassesSource ? "glasses" : "phone")
+    record.videoSource = session.videoSource ?? "none"
 
     let outcome = await waitForCompletion(session)
     record.endedBecause = outcome.reason
@@ -119,7 +117,7 @@ final class LiveKitInterceptor: Interceptor {
       NSLog("[Corvus] no transcript published by the worker")
     }
 
-    await session.stop()
+    await session.disconnect(restartPreview: true)
     return finish(record)
   }
 
@@ -133,7 +131,7 @@ final class LiveKitInterceptor: Interceptor {
   /// The worker ends an intercept by leaving the room, so a departed agent is
   /// the normal finish. The ceilings exist because every other way this ends is
   /// a failure that would otherwise hold the watcher's lock open.
-  private func waitForCompletion(_ session: LiveKitSession) async -> Outcome {
+  private func waitForCompletion(_ session: any RealtimeMedia) async -> Outcome {
     let started = Date()
     let joinDeadline = CorvusConfig.agentJoinTimeoutSeconds
     let ceiling = CorvusConfig.maxRealtimeInterceptSeconds
@@ -142,14 +140,14 @@ final class LiveKitInterceptor: Interceptor {
     while true {
       if cancelled { return Outcome(reason: nil, abort: "cancelled") }
 
-      switch session.agentStatus {
-      case .listening, .thinking, .speaking, .starting:
+      switch session.agentPresence {
+      case .present:
         everJoined = true
       case .left:
         // Only meaningful after it actually arrived; `left` is also the state
         // before anything has ever joined.
         if everJoined { return Outcome(reason: "worker ended the intercept") }
-      case .waiting, .none:
+      case .waiting, .absent:
         break
       }
 
@@ -157,10 +155,10 @@ final class LiveKitInterceptor: Interceptor {
       // phone as a disconnect carrying "Room deleted". Once it has joined,
       // any close is the intercept finishing; only a failure before it ever
       // arrived is an abort worth recording as one.
-      if case .failed(let why) = session.state {
+      if case .failed(let why) = session.linkState {
         return everJoined ? Outcome(reason: "room closed (\(why))") : Outcome(abort: why)
       }
-      if session.state == .disconnected, everJoined {
+      if session.linkState == .disconnected, everJoined {
         return Outcome(reason: "room closed")
       }
 

@@ -67,18 +67,18 @@ final class WatcherCoordinator: ObservableObject {
   /// The realtime interceptor talks through the call screen's own room, so it
   /// needs the session that screen owns. Passed in rather than reached for
   /// globally, because a second LiveKit room would fight this one for the mic.
-  private weak var liveKit: LiveKitSession?
+  private weak var media: (any RealtimeMedia)?
 
-  func attach(liveKit: LiveKitSession) {
-    self.liveKit = liveKit
+  func attach(media: any RealtimeMedia) {
+    self.media = media
     if CorvusConfig.interceptor == .liveKit {
-      interceptor = InterceptorKind.liveKit.make(liveKit: liveKit)
+      interceptor = InterceptorKind.liveKit.make(media: media)
     }
   }
 
   func use(_ kind: InterceptorKind) {
     interceptor?.cancel()
-    interceptor = kind.make(liveKit: liveKit)
+    interceptor = kind.make(media: media)
     CorvusConfig.interceptor = kind
   }
 
