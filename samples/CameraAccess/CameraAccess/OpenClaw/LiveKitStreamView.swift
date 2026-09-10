@@ -1,5 +1,6 @@
 import LiveKit
 import SwiftUI
+import WebKit
 
 /// Phone-mode main screen under LiveKit: camera preview, a gear, a call
 /// button. The overlays the direct connection accumulated -- status pills,
@@ -12,6 +13,38 @@ struct LiveKitStreamView: View {
   var glassesPlaceholder: (title: String, caption: String)? = nil
   var missionControls = false
   @State private var showSettings = false
+  @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
+
+  // Quick glasses/phone source switch on the call screen. Flips the shared
+  // capture-source setting; StreamSessionView's onChange swaps the pipeline.
+  // A single highlight bubble slides between the two slots (phone at index 0,
+  // glasses at index 1) with a spring, so tap and swipe both animate.
+  private var captureSourceToggle: some View {
+    let itemWidth: CGFloat = 42
+    let itemHeight: CGFloat = 30
+    let selectedIndex = captureSourceRaw == CaptureSource.glasses.rawValue ? 1 : 0
+    return ZStack(alignment: .leading) {
+      Capsule()
+        .fill(.white.opacity(0.18))
+        .frame(width: itemWidth, height: itemHeight)
+        .offset(x: CGFloat(selectedIndex) * itemWidth)
+      HStack(spacing: 0) {
+        ForEach(CaptureSource.allCases, id: \.rawValue) { source in
+          Button { captureSourceRaw = source.rawValue } label: {
+            Image(systemName: source == .glasses ? "eyeglasses" : "iphone")
+              .font(.system(size: 15, weight: .medium))
+              .foregroundStyle(captureSourceRaw == source.rawValue ? .white : .white.opacity(0.4))
+              .frame(width: itemWidth, height: itemHeight)
+          }
+          .buttonStyle(.plain)
+        }
+      }
+    }
+    .padding(3)
+    .background(.black.opacity(0.35), in: Capsule())
+    .padding(.leading, 16)
+    .animation(.spring(response: 0.3, dampingFraction: 0.72), value: captureSourceRaw)
+  }
 
   var body: some View {
     ZStack {
@@ -41,7 +74,14 @@ struct LiveKitStreamView: View {
             }
           }
       }
-      if session.usingGlassesSource && !session.hasGlassesFrame, let ph = glassesPlaceholder {
+      // Suppressed while connecting, establishing video, or failed: those
+      // states own the centered spot with their own message, so the two never
+      // stack on each other.
+      if captureSourceRaw == CaptureSource.glasses.rawValue,
+         session.state == .connected || session.state == .disconnected,
+         !session.videoEstablishing,
+         !session.hasGlassesFrame || session.glassesFrameStale,
+         let ph = glassesPlaceholder {
         VStack(spacing: 8) {
           Text(ph.title)
             .font(.title3.weight(.semibold))
@@ -63,7 +103,7 @@ struct LiveKitStreamView: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 32)
         }
-      } else if session.state == .connecting {
+      } else if session.state == .connecting || session.videoEstablishing {
         VStack(spacing: 16) {
           ProgressView().tint(.white)
           Text("Connecting")
@@ -144,6 +184,7 @@ struct LiveKitStreamView: View {
 
       if !missionControls { VStack {
         HStack {
+          captureSourceToggle
           Spacer()
           Button { showSettings = true } label: {
             Image(systemName: "gearshape.fill")
@@ -167,6 +208,25 @@ struct LiveKitStreamView: View {
         .padding(.bottom, 24)
       } }
     }
+    .simultaneousGesture(
+      // Directional and edge-bounded, paging convention: swipe left pages to
+      // the mode on the right (glasses), swipe right pages to the mode on the
+      // left (phone). At an edge, swiping further off it reselects the same
+      // mode instead of wrapping, so a repeated swipe never flip-flops.
+      DragGesture(minimumDistance: 40)
+        .onEnded { value in
+          // Never flip the source mid-transition. A swipe landing during the
+          // connect handshake races the in-flight start(): it can publish the
+          // wrong camera into a live room and strands a fresh room per flip
+          // (the gateway mints a new room per ticket).
+          guard session.state != .connecting, !session.videoEstablishing else { return }
+          guard abs(value.translation.width) > abs(value.translation.height),
+                abs(value.translation.width) > 60 else { return }
+          captureSourceRaw = value.translation.width < 0
+            ? CaptureSource.glasses.rawValue
+            : CaptureSource.iPhoneCamera.rawValue
+        }
+    )
     .sheet(isPresented: $showSettings) { SettingsView() }
     // Haptics are opt-in on iOS; a voice call that connects silently under a
     // pocketed phone gives no confirmation at all. Standard call-app grammar:
@@ -208,6 +268,13 @@ struct AgentCardView: View {
             .padding(6)
         }
       }
+      if card.type == "live", let urlString = card.url, let url = URL(string: urlString) {
+        // Live browser view (Browser Use): the CUA's screen, mid-card, while the
+        // browse task runs. A live viewer page -- needs JS + WebSocket, both on.
+        LiveWebView(url: url)
+          .frame(height: 320)
+          .clipShape(RoundedRectangle(cornerRadius: 10))
+      } else {
       ScrollView {
         VStack(alignment: .leading, spacing: 10) {
           if let value = card.value {
@@ -266,6 +333,7 @@ struct AgentCardView: View {
         }
       }
       .frame(maxHeight: 320)
+      }
     }
     .padding(14)
     .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 18))
@@ -275,6 +343,27 @@ struct AgentCardView: View {
         if drag.translation.height < -30 { onDismiss() }
       }
     )
+  }
+}
+
+/// Minimal WKWebView wrapper for the live-view card. JavaScript is on (the live
+/// viewer is a JS + WebSocket page); WebSocket works in WKWebView by default.
+struct LiveWebView: UIViewRepresentable {
+  let url: URL
+
+  func makeUIView(context: Context) -> WKWebView {
+    let config = WKWebViewConfiguration()
+    config.defaultWebpagePreferences.allowsContentJavaScript = true
+    let webView = WKWebView(frame: .zero, configuration: config)
+    webView.isOpaque = false
+    webView.backgroundColor = .black
+    webView.scrollView.isScrollEnabled = false
+    webView.load(URLRequest(url: url))
+    return webView
+  }
+
+  func updateUIView(_ webView: WKWebView, context: Context) {
+    if webView.url != url { webView.load(URLRequest(url: url)) }
   }
 }
 

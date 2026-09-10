@@ -11,6 +11,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -20,8 +22,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -35,6 +39,8 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,6 +58,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -63,6 +72,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -74,11 +84,13 @@ import com.meta.wearable.dat.externalsampleapps.cameraaccess.livekit.LiveKitSess
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.livekit.LiveKitUiState
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.livekit.SessionState
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.livekit.UiCard
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.CaptureSource
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.wearables.GlassesIssue
 import io.livekit.android.renderer.TextureViewRenderer
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.VideoTrack
+import kotlin.math.abs
 import livekit.org.webrtc.RendererCommon
 
 /**
@@ -97,6 +109,7 @@ fun LiveKitStreamScreen(
     viewModel: LiveKitSessionViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val captureSource by SettingsManager.captureSourceFlow.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         if (!viewModel.autoStartIfNeeded()) {
@@ -134,7 +147,47 @@ fun LiveKitStreamScreen(
         )
     }
 
-    Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            // Swipe left/right anywhere on the video flips glasses <-> phone,
+            // mirroring the top-bar toggle. Runs on the Initial pass and only
+            // commits to a clearly-horizontal one-finger drag, so pinch-zoom
+            // (two fingers), long-press-to-freeze, and the bottom-sheet's
+            // vertical drag are all left untouched.
+            .pointerInput(Unit) {
+                val switchThreshold = 60.dp.toPx()
+                val slop = viewConfiguration.touchSlop
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var committed = false
+                    var dx = 0f
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.changes.size > 1) break
+                        val change = event.changes.first()
+                        if (change.changedToUp()) break
+                        dx = change.position.x - down.position.x
+                        val dy = change.position.y - down.position.y
+                        if (!committed) {
+                            if (abs(dy) > slop && abs(dy) >= abs(dx)) break
+                            if (abs(dx) > slop && abs(dx) > abs(dy)) committed = true
+                        }
+                        if (committed) change.consume()
+                    }
+                    if (committed && abs(dx) > switchThreshold) {
+                        // Directional and edge-bounded, paging convention:
+                        // swipe left pages to the mode on the right (glasses),
+                        // swipe right pages to the mode on the left (phone).
+                        // Off-edge swipes reselect the same mode rather than
+                        // wrapping, so a repeated swipe never flip-flops.
+                        SettingsManager.captureSource =
+                            if (dx < 0) CaptureSource.GLASSES else CaptureSource.PHONE
+                    }
+                }
+            },
+    ) {
         val track = uiState.displayTrack
         if (track != null) {
             // Pinch zoom drives the phone camera; glasses have no camera
@@ -159,6 +212,7 @@ fun LiveKitStreamScreen(
         }
 
         if (uiState.isGlassesSource && !uiState.glassesStreaming &&
+            !uiState.videoEstablishing &&
             uiState.frozenFrame == null && uiState.state != SessionState.Connecting &&
             uiState.state !is SessionState.Failed
         ) {
@@ -171,9 +225,10 @@ fun LiveKitStreamScreen(
                     "Glasses update required" to
                         "Device '${glassesIssue.deviceName}' requires an update to work with this app."
                 GlassesIssue.Reconnecting ->
-                    "Reconnecting to glasses" to "Video will appear when your glasses start streaming."
+                    "Reconnecting to glasses" to "Make sure your glasses are on and the hinges are open."
                 null ->
-                    "Waiting for glasses video" to "Video will appear when your glasses start streaming."
+                    "Put on your glasses" to
+                        "Open the hinges and put them on. The camera turns off when they're folded or off your face."
             }
             Column(
                 modifier = Modifier.align(Alignment.Center).padding(horizontal = 32.dp),
@@ -204,7 +259,8 @@ fun LiveKitStreamScreen(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .statusBarsPadding()
-                    .padding(start = 16.dp, top = 16.dp)
+                    // Below the capture-source toggle, which owns the top-left corner.
+                    .padding(start = 16.dp, top = 60.dp)
                     .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(50))
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             )
@@ -246,6 +302,23 @@ fun LiveKitStreamScreen(
                 }
             }
             else -> {}
+        }
+
+        // Connected but glasses video is still establishing: keep the same
+        // connecting spinner up instead of flashing the put-them-on reminder.
+        if (uiState.videoEstablishing && uiState.state == SessionState.Connected) {
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                CircularProgressIndicator(color = Color.White)
+                Text(
+                    text = "Connecting",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 15.sp,
+                )
+            }
         }
 
         // Pinned frame floats as a card over the still-live view: the user
@@ -311,6 +384,17 @@ fun LiveKitStreamScreen(
                     .padding(8.dp),
             )
         }
+
+        // Capture-source switch, top-left opposite the gear: flip glasses <->
+        // phone without opening Settings, the tap counterpart to the swipe.
+        CaptureSourceToggle(
+            current = captureSource,
+            onSelect = { SettingsManager.captureSource = it },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = 8.dp, top = 4.dp),
+        )
 
         // Generative UI card from the agent's show_card tool: one card at a
         // time floating over the upper portion, below the status pill, clear
@@ -439,6 +523,26 @@ private fun UiCardView(
                 )
             }
         }
+        if (card.type == "live" && card.url != null) {
+            // Live browser view (Browser Use). The URL runs JavaScript and opens
+            // a WebSocket to stream the remote browser, so JS + DOM storage are
+            // required. Fixed height so it floats mid-screen like a result card.
+            AndroidView(
+                factory = { ctx ->
+                    android.webkit.WebView(ctx).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        webViewClient = android.webkit.WebViewClient()
+                        loadUrl(card.url)
+                    }
+                },
+                onRelease = { it.destroy() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(320.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+            )
+        } else {
         Column(
             modifier = Modifier
                 .verticalScroll(rememberScrollState())
@@ -525,6 +629,7 @@ private fun UiCardView(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -702,6 +807,84 @@ private fun FreezeButton(
                 .size(innerSize)
                 .clip(CircleShape)
                 .background(color),
+        )
+    }
+}
+
+/**
+ * Compact glasses/phone switch that lives on the call screen, styled like the
+ * gear. No glasses glyph ships in the icon set, so the eye stands in for the
+ * glasses' point of view. Writes straight to SettingsManager; the root
+ * scaffold observes the same flow and swaps the capture pipeline live.
+ */
+@Composable
+private fun CaptureSourceToggle(
+    current: CaptureSource,
+    onSelect: (CaptureSource) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val itemWidth = 44.dp
+    val itemHeight = 32.dp
+    // Phone at index 0 (left), glasses at index 1 (right), matching the swipe.
+    val selectedIndex = if (current == CaptureSource.GLASSES) 1 else 0
+    // Single highlight bubble that springs between the two slots on tap or swipe.
+    val bubbleOffset by animateDpAsState(
+        targetValue = itemWidth * selectedIndex,
+        label = "sourceBubble",
+    )
+    Box(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+            .padding(3.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .offset(x = bubbleOffset)
+                .size(itemWidth, itemHeight)
+                .background(Color.White.copy(alpha = 0.18f), CircleShape),
+        )
+        Row {
+            CaptureSourceToggleItem(
+                selected = current == CaptureSource.PHONE,
+                icon = Icons.Filled.Smartphone,
+                description = "Phone",
+                width = itemWidth,
+                height = itemHeight,
+                onClick = { onSelect(CaptureSource.PHONE) },
+            )
+            CaptureSourceToggleItem(
+                selected = current == CaptureSource.GLASSES,
+                icon = Icons.Filled.Visibility,
+                description = "Glasses",
+                width = itemWidth,
+                height = itemHeight,
+                onClick = { onSelect(CaptureSource.GLASSES) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CaptureSourceToggleItem(
+    selected: Boolean,
+    icon: ImageVector,
+    description: String,
+    width: Dp,
+    height: Dp,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(width, height)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = description,
+            tint = if (selected) Color.White else Color.White.copy(alpha = 0.4f),
+            modifier = Modifier.size(20.dp),
         )
     }
 }

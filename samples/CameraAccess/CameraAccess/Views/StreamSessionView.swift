@@ -30,7 +30,7 @@ struct StreamSessionView: View {
   /// and decides when a pickup is worth interrupting for.
   @StateObject private var watcher = WatcherCoordinator(study: StudyStore.shared.active)
   @AppStorage(CaptureSource.defaultsKey) private var captureSourceRaw = CaptureSource.iPhoneCamera.rawValue
-  @AppStorage(IntelligenceEngine.defaultsKey) private var intelligenceRaw = IntelligenceEngine.gemini.rawValue
+  @AppStorage(IntelligenceEngine.defaultsKey) private var intelligenceRaw = IntelligenceEngine.openai.rawValue
   @State private var glassesAutoStarted = false
   /// Only signal available that DAT camera permission may have been granted.
   /// It is granted in the Meta AI app, and nothing publishes it back here.
@@ -59,9 +59,10 @@ struct StreamSessionView: View {
     case .hingesClosed:
       return ("Glasses folded", "Open the hinges to start streaming.")
     case .reconnecting:
-      return ("Reconnecting to glasses", "Video will appear when your glasses start streaming.")
+      return ("Reconnecting to glasses", "Make sure your glasses are on and the hinges are open.")
     case nil:
-      return ("Waiting for glasses video", "Video will appear when your glasses start streaming.")
+      return ("Put on your glasses",
+              "Open the hinges and put them on. The camera turns off when they're folded or off your face.")
     }
   }
 
@@ -191,14 +192,16 @@ struct StreamSessionView: View {
             .task {
               guard !glassesAutoStarted else { return }
               glassesAutoStarted = true
-              // Restored to the cadence this shipped with. Two attempts at
-              // retuning it moved the time-to-first-frame from 36s to 31s --
-              // noise -- because the wait was never this loop's fault.
-              for _ in 0..<4 {
-                await viewModel.handleStartStreaming()
-                if viewModel.isStreaming { break }
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
+              NSLog("[Stream] auto-start begin (waiting on glasses wake + BT handshake)")
+              await viewModel.handleStartStreaming()
+              // Poll fast so the loop reacts the instant the stream is up, and
+              // re-attempt the start every ~10s while the glasses are still waking
+              // (up to ~90s). The video itself is driven by the streamingStatus
+              // onChange, so this loop only governs retries, not the reveal.
+              for tick in 0..<180 {
                 if viewModel.isStreaming || captureSource != .glasses { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if tick > 0, tick % 20 == 0 { await viewModel.handleStartStreaming() }
               }
             }
         } else {
@@ -281,14 +284,18 @@ struct StreamSessionView: View {
       watcher.stop()
       glassesResumeTask?.cancel()
     }
-    .onChange(of: viewModel.isStreaming) { streaming in
-      // Glasses mode: the call rides the DAT stream's lifecycle -- frames
-      // start flowing, the room opens; the stream ends, the call ends.
+    .onChange(of: viewModel.streamingStatus) { status in
+      // Glasses mode: the call rides the DAT stream's lifecycle. Open the room
+      // only once frames are actually flowing (.streaming), so the buffer-track
+      // publish has a frame to settle its dimensions instead of timing out. A
+      // transient .waiting (glasses briefly asleep) keeps the call alive; only
+      // a real .stopped ends it. Gating on isStreaming (which is true during
+      // .waiting) opened the room before any frame and made the publish race.
       guard captureSource == .glasses, CorvusConfig.useLiveKitCall else { return }
       Task {
-        if streaming {
+        if status == .streaming {
           await liveKit.start()
-        } else if liveKit.isActive {
+        } else if status == .stopped, liveKit.isActive {
           await liveKit.stop()
         }
       }

@@ -6,12 +6,33 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { config } from "./config.js";
 import { initStore, saveStore, userResources } from "./store.js";
 import { ensureUser } from "./provision.js";
-import { runTurn, runTurnStreaming, queueContext, drainContext } from "./turn.js";
+import { runTurn, runTurnStreaming, queueContext, drainContext, type TurnStats } from "./turn.js";
 import { registerSocket, notifyUser, queuePending, drainPending } from "./notify.js";
 import { appendTrace, readTrace } from "./trace.js";
+import { startBrowse, awaitBrowse, browseEnabled, type BrowseDetail } from "./browse.js";
+
+/** Flatten the computer-use agent's run detail into trace fields. */
+function browseDetailFields(d?: BrowseDetail): Record<string, unknown> {
+  if (!d) return {};
+  return {
+    status: d.status,
+    model: d.model,
+    result: d.result?.slice(0, 1000),
+    error: d.error ?? undefined,
+    steps: d.steps,
+    step_count: d.stepCount,
+    input_tokens: d.inputTokens,
+    output_tokens: d.outputTokens,
+    duration_s: d.durationS,
+  };
+}
 import { registerConnectRoutes } from "./connect.js";
+import { approvedAccountIds, initAuth, lookupToken, registerAuthRoutes, touchLastSeen } from "./auth.js";
 
 initStore(config.storePath);
+// Sign-in accounts resolve tokens synchronously from an in-memory index, so
+// it must exist before the first request.
+await initAuth();
 
 const app = express();
 // 5mb: task requests may carry a base64 camera frame (~200-400KB typical).
@@ -86,12 +107,22 @@ function userFromRequest(req: express.Request, explicitToken?: string): string |
     const impersonated = req.header("x-user-id")?.trim();
     return impersonated || null;
   }
-  return config.tokens.get(token) ?? null;
+  const staticUser = config.tokens.get(token);
+  if (staticUser) return staticUser;
+  // Self-registered accounts: only approved ones resolve here; pending and
+  // revoked look exactly like a bad token everywhere except /me.
+  const dyn = lookupToken(token);
+  if (dyn && dyn.status === "approved") {
+    touchLastSeen(dyn.userId);
+    return dyn.userId;
+  }
+  return null;
 }
 
 // ---------- app connections (OAuth -> vault) ----------
 
 registerConnectRoutes(app, userFromRequest);
+registerAuthRoutes(app);
 
 // ---------- HTTP: the app's existing protocol ----------
 
@@ -209,12 +240,41 @@ app.post("/v1/chat/completions", async (req, res) => {
     const isServiceCall = !!config.serviceToken && bearer === config.serviceToken;
     // What the user is looking at, when the voice layer judged it relevant.
     const image = typeof req.body?.image === "string" && req.body.image ? req.body.image : undefined;
+    // The worker's job process dies with the call. If that happens while this
+    // request is still running, the finished answer would be written to a dead
+    // socket -- observed live: a 25s research task lost outright. Track it so
+    // the result can be parked for the next call instead.
+    let clientGone = false;
+    res.on("close", () => {
+      if (!res.writableFinished) clientGone = true;
+    });
     // The session owns durable history; only the newest user turn is sent.
+    // What the subagent did, for the study trace: tool calls (name, server,
+    // ok, ms), chain depth, stop reason. Text only, args/results clipped.
+    const traceSubagent = (stats: TurnStats | undefined, outcome: string, resultText: string) => {
+      if (!stats) return;
+      appendTrace(userId, [
+        {
+          type: "subagent_turn",
+          task: lastUser.slice(0, 200),
+          outcome,
+          tool_count: stats.tools.length,
+          tools: stats.tools,
+          thinking: stats.thinking,
+          messages: stats.messages,
+          stop_reason: stats.stop_reason,
+          duration_ms: stats.duration_ms,
+          result_chars: resultText.length,
+          errors: stats.tools.filter((t) => t.ok === false).length,
+        },
+      ]);
+    };
     const result = await runTurn(
       sessionId,
       lastUser,
       isServiceCall ? 110_000 : config.spawnMode ? 0 : config.quickAnswerTimeoutMs,
-      (lateText) => {
+      (lateText, stats) => {
+        traceSubagent(stats, "late", lateText);
         void recordTask(userId, lastUser, lateText);
         const delivered = notifyUser(userId, lateText);
         if (!delivered) {
@@ -227,6 +287,17 @@ app.post("/v1/chat/completions", async (req, res) => {
     );
 
     if (!result.deferred && result.text) void recordTask(userId, lastUser, result.text);
+    if (!result.deferred) traceSubagent(result.stats, clientGone ? "caller_gone" : "quick", result.text ?? "");
+    if (!result.deferred && result.text && clientGone) {
+      console.warn(`[turn] caller gone before completion; parking result for ${userId}`);
+      // Same wrapper the worker uses when it parks, so the next call's relay
+      // instruction reads identically.
+      void queuePending(
+        userId,
+        `A task from an earlier call finished. Task: ${lastUser.slice(0, 200)}\nResult: ${result.text}`,
+      );
+      return;
+    }
     const content = result.deferred
       ? config.spawnMode
         ? SPAWN_ACK
@@ -249,6 +320,90 @@ app.post("/v1/chat/completions", async (req, res) => {
   } catch (err) {
     console.error("[chat] turn failed:", err);
     res.status(502).json({ error: { message: "agent backend error" } });
+  }
+});
+
+// Live web browsing via Browser Use Cloud. Split into start + await so the
+// voice worker can show a live-view card the moment the browser is up (only the
+// worker holds the LiveKit room), then keep waiting for the result.
+app.post("/browse/start", async (req, res) => {
+  const userId = userFromRequest(req);
+  if (!userId) {
+    res.status(401).json({ error: { message: "invalid or missing gateway token" } });
+    return;
+  }
+  if (!browseEnabled()) {
+    res.status(503).json({ error: { message: "browser tasks are not enabled on this gateway" } });
+    return;
+  }
+  const task = String(req.body?.task ?? "").trim();
+  if (!task) {
+    res.status(400).json({ error: { message: "task is required" } });
+    return;
+  }
+  try {
+    const { runId, liveUrl } = await startBrowse(task);
+    res.json({ runId, liveUrl });
+  } catch (err) {
+    console.error("[browse] start failed:", err);
+    res.status(502).json({ error: { message: "browser backend error" } });
+  }
+});
+
+app.post("/browse/await", async (req, res) => {
+  const userId = userFromRequest(req);
+  if (!userId) {
+    res.status(401).json({ error: { message: "invalid or missing gateway token" } });
+    return;
+  }
+  const runId = String(req.body?.runId ?? "").trim();
+  const task = String(req.body?.task ?? "").trim();
+  if (!runId) {
+    res.status(400).json({ error: { message: "runId is required" } });
+    return;
+  }
+  const wrap = (t: string) => `A task from an earlier call finished. Task: ${task.slice(0, 200)}\nResult: ${t}`;
+  let clientGone = false;
+  res.on("close", () => {
+    if (!res.writableFinished) clientGone = true;
+  });
+  try {
+    const outcome = await awaitBrowse(runId, 170_000, (lateText, meta) => {
+      appendTrace(userId, [
+        {
+          type: "browser_task",
+          task: task.slice(0, 200),
+          outcome: "late",
+          run_id: meta.runId,
+          cost_usd: meta.cost,
+          ...browseDetailFields(meta.detail),
+        },
+      ]);
+      void recordTask(userId, task, lateText);
+      if (!notifyUser(userId, wrap(lateText))) void queuePending(userId, wrap(lateText));
+    });
+    if (!outcome.deferred) {
+      appendTrace(userId, [
+        {
+          type: "browser_task",
+          task: task.slice(0, 200),
+          outcome: clientGone ? "caller_gone" : "quick",
+          run_id: outcome.runId,
+          cost_usd: outcome.cost,
+          ...browseDetailFields(outcome.detail),
+        },
+      ]);
+      if (outcome.text) void recordTask(userId, task, outcome.text);
+      if (outcome.text && clientGone) {
+        void queuePending(userId, wrap(outcome.text));
+        res.json({ result: SPAWN_ACK });
+        return;
+      }
+    }
+    res.json({ result: outcome.deferred ? SPAWN_ACK : (outcome.text ?? "Done.") });
+  } catch (err) {
+    console.error("[browse] await failed:", err);
+    res.status(502).json({ error: { message: "browser backend error" } });
   }
 });
 
@@ -286,10 +441,18 @@ app.post("/livekit-token", async (req, res) => {
   // The engine choice (gemini | openai) rides as participant metadata; the
   // worker reads it when the user joins and picks the realtime model.
   const engine = req.body?.engine === "openai" ? "openai" : "gemini";
+  // Capture mode rides along too, so the study can tell a glasses day from a
+  // phone day. The worker also derives it from the published track name, which
+  // is better evidence, but a glasses call whose glasses never stream publishes
+  // no video track at all. An absent or unrecognised value is left out rather
+  // than defaulted: an older client that does not send it should read as
+  // unknown, never as a confident wrong condition.
+  const rawSource = req.body?.source;
+  const source = rawSource === "glasses" || rawSource === "phone" ? rawSource : undefined;
   const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
     identity: userId,
     ttl: "15m",
-    metadata: JSON.stringify({ engine }),
+    metadata: JSON.stringify(source ? { engine, source } : { engine }),
   });
   // One room per call, not per user: agent dispatch fires on room creation,
   // so a redial into a still-draining room from the previous call would get
@@ -423,6 +586,12 @@ app.get("/dashboard", (_req, res) => {
   res.sendFile(path.resolve("public/dashboard.html"));
 });
 
+// Participant guide: install, access code, Google connection, glasses setup,
+// and what the study logs. Public by design, like /install.
+app.get("/guide", (_req, res) => {
+  res.sendFile(path.resolve("public/guide.html"));
+});
+
 // Participant roster for the dashboard's picker. Service token only: a user
 // token names one user and has no business enumerating the others.
 app.get("/users", (req, res) => {
@@ -431,7 +600,7 @@ app.get("/users", (req, res) => {
     res.status(401).json({ error: { message: "service token required" } });
     return;
   }
-  res.json({ users: [...new Set(config.tokens.values())] });
+  res.json({ users: [...new Set([...config.tokens.values(), ...approvedAccountIds()])] });
 });
 
 // Interaction trace: what the user said, what the voice model said, what

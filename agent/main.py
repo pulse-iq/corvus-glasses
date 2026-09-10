@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -44,7 +45,9 @@ from livekit.agents import (
 )
 # Import RoomOptions from its module in the pinned LiveKit Agents SDK.
 from livekit.agents.voice.room_io import RoomOptions
+from livekit.agents.voice import VoiceActivityVideoSampler
 from livekit.plugins import google, openai
+from openai.types.beta.realtime.session import TurnDetection
 
 from corvus_intercept import InterceptSession, brief_from_metadata
 
@@ -54,6 +57,15 @@ INSTRUCTIONS = """You are VisionClaw, an AI assistant the user talks to while sh
 world through their phone camera or smart glasses. Keep responses concise and natural.
 
 You can see live video. Answer visual questions directly from what you see.
+
+The browse tool is your computer-use agent: it drives a real web browser on a live site, both
+to read and to ACT. Use it for anything that happens on a website -- shopping (add an item to a
+cart, buy, place an order, check out), booking, signing up, filling and submitting a public web
+form, as well as reading (find a specific product with its price and reviews, compare items in a
+store, check live availability or hours). Anything on a shopping site, store, or general website
+that is not one of the user's own connected accounts is browse -- "add this to my Amazon cart" is
+browse, not execute. If the user says "computer use agent", "browser", or "shopping agent", they
+mean browse. It is slower than quick_search, so speak a brief acknowledgment before calling it.
 
 For quick factual lookups -- weather, sports scores, stock prices, news, opening hours,
 current facts about the world -- use quick_search. It answers in a couple of seconds;
@@ -75,9 +87,12 @@ Every note tool puts the up-to-date list card on screen by itself -- never call 
 for note content, just confirm briefly in speech. When the user asks to note something
 they are showing on camera, save what you SEE as text -- one item per save_note call.
 
-For anything requiring action or multi-step work -- messages, reminders, calendars,
-research, smart home -- use the execute tool. Speak a brief natural acknowledgment BEFORE
-calling it, never call it silently. Results may arrive as a follow-up; relay them as the
+The execute tool is the user's personal account agent -- it acts inside their OWN connected
+accounts and data: messages and email, reminders, calendars, Notion pages and databases, Slack
+(send a message to a channel or person, search Slack, post a canvas), general web research, smart
+home. It CANNOT open shopping sites or take actions on a website -- for anything that happens on a
+website, including shopping or adding to a cart, use browse instead, even when the user calls it
+"an action". Speak a brief natural acknowledgment BEFORE calling it, never call it silently. Results may arrive as a follow-up; relay them as the
 answer to what was asked, not as a notification. If the task is about something the user
 is showing on camera, set attach_view=true so the actual image travels with the task --
 still describe what you see in the task text as well."""
@@ -91,22 +106,59 @@ class FrameHolder:
     def __init__(self) -> None:
         self.frame: rtc.VideoFrame | None = None
         self.rotation: int = 0
+        # When the frame above reached this process. Lets staleness be measured
+        # rather than estimated. Agent-side age only: the glasses to phone and
+        # phone to SFU legs run on clocks we cannot read from here.
+        self.arrived_at: float = 0.0
 
 
 def encode_latest_frame(holder: FrameHolder) -> str | None:
-    """JPEG-encode the latest frame (capped at 1024px, rotation applied) as base64."""
+    """JPEG-encode the latest frame (capped at 1280px, rotation applied) as base64.
+
+    1280 is the DAT source ceiling (glasses stream at 720x1280), so a full-res
+    frame passes through untouched -- DAT is the only limiter, not this cap."""
     frame = holder.frame
     if frame is None:
         return None
+    if holder.arrived_at:
+        logger.info(
+            "attach_view still: frame was %.0fms old at the agent",
+            (time.time() - holder.arrived_at) * 1000,
+        )
     rgba = frame.convert(rtc.VideoBufferType.RGBA)
     img = Image.frombuffer("RGBA", (rgba.width, rgba.height), bytes(rgba.data)).convert("RGB")
     rot = holder.rotation % 360
     if rot:
         img = img.rotate(-rot, expand=True)
-    img.thumbnail((1024, 1024))
+    img.thumbnail((1280, 1280))
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=80)
     return base64.b64encode(buf.getvalue()).decode()
+
+
+class StalenessSampler:
+    """Wraps the default video sampler and does not change what it admits. The
+    realtime model only ever sees a sampled subset (1fps while the user speaks,
+    0.3fps otherwise), so this gap, not the client frame rate, is what decides
+    how current the model's view is. Logging it turns that into a number."""
+
+    def __init__(self, holder: FrameHolder) -> None:
+        self._inner = VoiceActivityVideoSampler(speaking_fps=1.0, silent_fps=0.3)
+        self._holder = holder
+        self.last_admit: float = 0.0
+
+    def __call__(self, frame: rtc.VideoFrame, session) -> bool:
+        admitted = self._inner(frame, session)
+        if admitted:
+            now = time.time()
+            if self.last_admit:
+                logger.info(
+                    "video to model: %.2fs since the previous frame (user_state=%s)",
+                    now - self.last_admit,
+                    getattr(session, "user_state", "?"),
+                )
+            self.last_admit = now
+        return admitted
 
 
 class Tracer:
@@ -114,7 +166,9 @@ class Tracer:
     voice model said, and what actions ran. Text only BY DESIGN -- events must
     never carry frames or base64 image payloads (the gateway strips image-like
     fields as a second line of defense). Events batch to the gateway; a failed
-    delivery drops that batch rather than ever stalling the voice loop."""
+    delivery re-queues rather than ever stalling the voice loop, and only a
+    gateway outage long enough to overflow the queue loses anything, oldest
+    first."""
 
     FLUSH_AFTER = 20
     FLUSH_SECONDS = 5.0
@@ -177,6 +231,39 @@ class Userdata:
     frames: FrameHolder
     tracer: Tracer = field(default_factory=lambda: Tracer("unknown"))
     room: rtc.Room | None = None
+    # Everything the assistant has said this session, in order; relay checks
+    # read it to confirm a delivered result was actually spoken.
+    spoken: list[str] = field(default_factory=list)
+    # The Browser Use run whose live-view card is currently on screen. A browse
+    # run dismisses the card only while it still owns this slot, so an earlier
+    # run finishing cannot tear down a newer run's card (the double-fire race).
+    live_browse_run: str | None = None
+    # The in-flight browse job, if any. A second browse call while one is still
+    # running is refused instead of spinning up a second Browser Use run -- the
+    # model tends to re-fire the tool when the first is slow (double-fire), and
+    # two live CUA runs mean double cost and duplicate relays.
+    browse_job: "asyncio.Future[str] | None" = None
+
+
+_RELAY_STOPWORDS = {"finished", "earlier", "result", "research", "summary", "shopping", "however", "because"}
+
+
+def _relay_keywords(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]{7,}", text.lower()) if w not in _RELAY_STOPWORDS}
+
+
+def _relay_hits(spoken: list[str], keywords: set[str]) -> int:
+    said = " ".join(spoken).lower()
+    return sum(1 for w in keywords if w in said)
+
+
+def _relay_needed(keywords: set[str]) -> int:
+    # How many of the result's distinctive words must appear in what the model
+    # actually said for us to count it as relayed. Scales with result length,
+    # but a short result (few keywords) must not demand more hits than it has --
+    # that made every one-line result look "not relayed" and re-park duplicates.
+    n = len(keywords)
+    return 0 if n == 0 else min(n, max(1, n // 10))
 
 
 _search_client: genai.Client | None = None
@@ -239,6 +326,13 @@ QUICK_ANSWER_S = 10
 # notes: a working agent should never be indistinguishable from a dead one.
 HEARTBEAT_S = 30
 MAX_HEARTBEATS = 4
+# How long to wait for a free turn slot before injecting a result relay, so it
+# does not collide with an active response or a barge-in.
+DELIVER_WAIT_S = 8
+# After a browse finishes, its cloud browser lingers on the final page for a
+# couple of minutes, so the live card keeps showing the result. Hold it for this
+# window, then clear it.
+BROWSE_KEEPALIVE_S = 90
 
 # The gateway echoes this ack when a task outlives its own 110s wait; it is an
 # instruction blob for a voice model, not an answer, so never relay it as one.
@@ -280,7 +374,10 @@ async def _gateway_execute(user_id: str, task: str, image_b64: str | None = None
 async def _park_result(user_id: str, task: str, result: str) -> None:
     """Hand a result we can no longer speak (call over) back to the gateway;
     the next call's worker drains and delivers it."""
-    text = f"A task from an earlier call finished. Task: {task[:200]}\nResult: {result}"
+    await _park_text(user_id, f"A task from an earlier call finished. Task: {task[:200]}\nResult: {result}")
+
+
+async def _park_text(user_id: str, text: str) -> None:
     try:
         async with aiohttp.ClientSession() as http:
             async with http.post(
@@ -293,6 +390,28 @@ async def _park_result(user_id: str, task: str, result: str) -> None:
         logger.info("parked result for next call: user=%s", user_id)
     except Exception:
         logger.exception("failed to park result: user=%s", user_id)
+
+
+async def _apps_needing_reconnect(user_id: str) -> list[str]:
+    """Connected apps whose stored credential no longer works (Gmail's
+    testing-mode refresh tokens expire every 7 days by policy). Only the user
+    can fix it, from Settings, so this exists to say so once per call."""
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.get(
+                f"{_gateway_url()}/apps",
+                headers=_gateway_headers(user_id),
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                body = await resp.json()
+        return [
+            str(a.get("displayName") or a.get("id"))
+            for a in body.get("apps") or []
+            if a.get("connected") and a.get("needs_reconnect")
+        ]
+    except Exception:
+        logger.exception("app health check failed: user=%s", user_id)
+        return []
 
 
 async def _drain_pending(user_id: str) -> list[str]:
@@ -473,14 +592,217 @@ async def delete_note(ctx: RunContext[Userdata], match: str, tag: str | None = N
     return f"Removed: {deleted}. The updated list card is already on screen; confirm briefly."
 
 
+async def _gateway_browse_start(user_id: str, task: str) -> dict:
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{_gateway_url()}/browse/start",
+            headers=_gateway_headers(user_id),
+            json={"task": task},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status == 503:
+                return {"disabled": True}
+            resp.raise_for_status()
+            return await resp.json()
+
+
+async def _gateway_browse_await(user_id: str, run_id: str, task: str) -> str:
+    async with aiohttp.ClientSession() as http:
+        async with http.post(
+            f"{_gateway_url()}/browse/await",
+            headers=_gateway_headers(user_id),
+            json={"runId": run_id, "task": task},
+            timeout=aiohttp.ClientTimeout(total=200),
+        ) as resp:
+            body = await resp.json()
+    return body.get("result") or "The browser task returned nothing."
+
+
+async def _dismiss_card(room, uuid: str) -> None:
+    if room is None:
+        return
+    try:
+        await room.local_participant.send_text(json.dumps({"uuid": uuid, "dismiss": True}), topic="vc.ui")
+    except Exception:
+        logger.exception("failed to dismiss card: uuid=%s", uuid)
+
+
+def _spawn_bg(coro: "Awaitable[None]") -> None:
+    t = asyncio.ensure_future(coro)
+    _relay_tasks.add(t)
+    t.add_done_callback(_relay_tasks.discard)
+
+
+def _session_busy(session: AgentSession) -> bool:
+    """True while a response is active (agent speaking/thinking) or the user is
+    mid-turn. Injecting a generate_reply now competes for the single active-
+    response slot and races with barge-in handling -- the exact condition that
+    left user turns unanswered on the OpenAI Realtime engine."""
+    return session.agent_state in ("speaking", "thinking") or session.user_state == "speaking"
+
+
+async def _await_session_free(session: AgentSession, timeout: float) -> bool:
+    """Wait until it is safe to inject a reply. Returns True if a free slot opened."""
+    deadline = time.monotonic() + timeout
+    while _session_busy(session):
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.25)
+    return True
+
+
+async def _run_delegated(
+    ctx: RunContext[Userdata],
+    task: str,
+    tool: str,
+    job: "asyncio.Future[str]",
+    on_deliver: Callable[[str | None], Awaitable[None]] | None = None,
+) -> str:
+    """Shared delegation loop for slow tools (execute, browse): hold the turn a
+    few seconds; if the result is not back, free the model, heartbeat, then relay
+    the result when it lands -- verifying it was actually spoken, and parking it
+    for the next call if the user hung up or the model never said it. on_deliver,
+    if given, is fired with the result text once it is handed to the model to
+    speak (None on failure/deferral), so a live-view card can swap itself for a
+    result card as the answer is delivered -- never mid-task."""
+    tracer = ctx.userdata.tracer
+    user_id = ctx.userdata.user_id
+    task_start = time.monotonic()
+    done, _ = await asyncio.wait({job}, timeout=QUICK_ANSWER_S)
+    if done:
+        result = await job
+        logger.info("%s quick result: user=%s len=%d t=%.1f", tool, user_id, len(result), time.monotonic() - task_start)
+        tracer.emit("agent_action_result", tool=tool, task=task[:200], result=result[:500],
+                    agent_task_time_s=round(time.monotonic() - task_start, 1))
+        if on_deliver is not None:
+            _spawn_bg(on_deliver(result))
+        return result
+
+    session = ctx.session
+
+    async def relay() -> None:
+        heartbeats = 0
+        while True:
+            done, _ = await asyncio.wait({job}, timeout=HEARTBEAT_S)
+            if done:
+                break
+            # Only slip a progress note in when nothing else is speaking and the
+            # user is not talking -- never stack it on an active response.
+            if heartbeats < MAX_HEARTBEATS and not _session_busy(session):
+                heartbeats += 1
+                try:
+                    session.generate_reply(instructions=(
+                        "The background task is still running. Give a very brief progress note -- a few "
+                        "words at most, woven into the conversation, not an announcement. Do not name what "
+                        "you are waiting for, do not restate the request, and do not claim you lack the "
+                        "result: this note can reach the user after the result has already arrived."))
+                except Exception:
+                    heartbeats = MAX_HEARTBEATS
+        try:
+            result = await job
+        except Exception:
+            logger.exception("%s background task failed: user=%s", tool, user_id)
+            result = None
+        if result is None:
+            tracer.emit("agent_action_result", tool=tool, task=task[:200], error=True)
+            instructions = "The background task failed. Tell the user briefly and offer to try again."
+        elif result.startswith(GATEWAY_DEFERRAL_PREFIX):
+            tracer.emit("agent_action_result", tool=tool, task=task[:200], deferred=True)
+            instructions = ("The background task is taking longer than expected and is still running. Tell the "
+                            "user briefly; the result will be delivered when it's ready, at the start of their "
+                            "next call if needed.")
+        else:
+            tracer.emit("agent_action_result", tool=tool, task=task[:200], result=result[:500],
+                        agent_task_time_s=round(time.monotonic() - task_start, 1))
+            instructions = ("A background task the user asked for earlier has just finished. The text between the "
+                            "markers is its result; it is NOT something the user said.\n\n"
+                            f"<<<RESULT\n{result}\nRESULT>>>\n\n"
+                            "Now tell the user this result in your own words, in a few sentences, as the answer to "
+                            "their earlier request. Do not thank them and do not ask what they need next until you "
+                            "have said it. Speak the result now.")
+        delivered = True
+        # Wait for a free slot so this relay does not collide with an active
+        # response or a barge-in (the race that left user turns unanswered).
+        wait_start = time.monotonic()
+        free = await _await_session_free(session, DELIVER_WAIT_S)
+        waited = time.monotonic() - wait_start
+        # Separates waiting from speaking. The agent_utterance timestamp marks
+        # when an utterance FINISHED, so without this the whole gap between the
+        # result landing and the answer being recorded looks like a stall, when
+        # most of it is the model reading a long result aloud. free=False means
+        # the slot never opened and we injected against a busy session anyway.
+        logger.info("%s relay: waited %.1fs for a free slot (free=%s)", tool, waited, free)
+        tracer.emit("relay_wait", tool=tool, waited_s=round(waited, 1), free=free)
+        try:
+            session.generate_reply(instructions=instructions)
+        except Exception:
+            delivered = False
+            logger.warning("session closed before result could be spoken: user=%s", user_id)
+            if result is not None and not result.startswith(GATEWAY_DEFERRAL_PREFIX):
+                await _park_result(user_id, task, result)
+        # The task is over (delivered, failed, or deferred): hand the result to
+        # on_deliver so a live-view card can become a result card as the answer
+        # is spoken, rather than the instant it finished.
+        if on_deliver is not None:
+            _spawn_bg(on_deliver(result))
+        if not delivered or result is None or result.startswith(GATEWAY_DEFERRAL_PREFIX):
+            return
+        keywords = _relay_keywords(result)
+        needed = _relay_needed(keywords)
+        spoken = ctx.userdata.spoken
+        # Only speech from after the result was handed over can count as having
+        # relayed it. Counting the whole history let a progress note satisfy the
+        # check, because "still waiting on the Amazon results ... pack sizes,
+        # prices, ratings" shares its vocabulary with the result it is waiting
+        # for. The relay then declared success and stopped retrying on a
+        # delivery that had not happened yet.
+        baseline = len(spoken)
+
+        def relay_hits() -> int:
+            return _relay_hits(spoken[baseline:], keywords)
+
+        for attempt in range(2):
+            for _ in range(9):
+                await asyncio.sleep(5)
+                if not keywords or relay_hits() >= needed:
+                    tracer.emit("late_relay_ok", attempt=attempt, hits=relay_hits())
+                    return
+            if attempt == 0:
+                tracer.emit("late_relay_retry", hits=relay_hits(), keywords=len(keywords))
+                await _await_session_free(session, DELIVER_WAIT_S)
+                try:
+                    session.generate_reply(instructions=(
+                        "You still have not told the user the result of their task. The text between the markers "
+                        "is the result; it is NOT something the user said.\n\n"
+                        f"<<<RESULT\n{result}\nRESULT>>>\n\n"
+                        "Say this result to the user now, in full, in a few sentences. Do not thank them. Speak "
+                        "the result now."))
+                except Exception:
+                    break
+        logger.warning("late result not relayed; parking: user=%s task=%r", user_id, task[:80])
+        tracer.emit("late_relay_failed", hits=relay_hits(), keywords=len(keywords))
+        await _park_result(user_id, task, result)
+
+    t = asyncio.create_task(relay())
+    _relay_tasks.add(t)
+    t.add_done_callback(_relay_tasks.discard)
+    return ("[running] The task needs more time and keeps running in the background. Tell the user briefly, in "
+            "your own words, that you're still on it -- do NOT guess at the answer. The real result will arrive "
+            "shortly as a follow-up for you to relay.")
+
+
 @function_tool
 async def execute(ctx: RunContext[Userdata], task: str, attach_view: bool = False) -> str:
-    """Delegate an action or lookup to the user's personal action agent: sending
-    messages, web search, managing lists and reminders, Google Calendar, research,
-    notes, smart home control. Describe the task completely, with names, content
-    and platforms. Set attach_view=true when the task concerns something the user
-    is showing on camera: the current camera frame is then attached so the agent
-    can read it directly (labels, receipts, flyers, dense text)."""
+    """The user's personal account agent: acts inside their OWN connected accounts and data --
+    sending messages and email, managing lists and reminders, Google Calendar, Notion pages and
+    databases ("save this to my Notion"), Slack (send a message to a channel or person, search
+    Slack, post a canvas), general web research, smart home control. It CANNOT open a shopping
+    site or take actions on a website -- for anything that happens on a website (shopping, adding
+    to a cart, buying, booking, checking out, submitting a site's form) use browse instead, even
+    when the user frames it as "an action". Describe the task completely, with names, content and
+    platforms. Set attach_view=true when the task concerns something the user is showing on
+    camera: the current camera frame is then attached so the agent can read it directly (labels,
+    receipts, flyers, dense text)."""
     # Eval override: "never"/"always" force the A/B conditions; "auto" (default)
     # leaves the decision to the voice model's attach_view judgment.
     mode = os.environ.get("ATTACH_VIEW_MODE", "auto")
@@ -491,110 +813,96 @@ async def execute(ctx: RunContext[Userdata], task: str, attach_view: bool = Fals
         ctx.userdata.user_id, attach_view, len(image_b64 or "") * 3 // 4096, task[:200],
     )
     # The trace records THAT a frame was attached, never the frame itself.
-    tracer = ctx.userdata.tracer
-    tracer.emit("agent_action", tool="execute", task=task, attached_view=bool(image_b64))
-    task_start = time.monotonic()
+    ctx.userdata.tracer.emit("agent_action", tool="execute", task=task, attached_view=bool(image_b64))
     job = asyncio.ensure_future(_gateway_execute(ctx.userdata.user_id, task, image_b64))
-    done, _ = await asyncio.wait({job}, timeout=QUICK_ANSWER_S)
-    if done:
-        result = await job
-        logger.info(
-            "execute quick result: user=%s len=%d agent_task_time_s=%.1f",
-            ctx.userdata.user_id, len(result), time.monotonic() - task_start,
-        )
-        tracer.emit(
-            "agent_action_result",
-            tool="execute",
-            task=task[:200],
-            result=result[:500],
-            agent_task_time_s=round(time.monotonic() - task_start, 1),
-        )
-        return result
+    return await _run_delegated(ctx, task, "execute", job)
 
-    # Slow path: free the model to keep talking, heartbeat while the task runs,
-    # then speak the result when it lands. If the user hangs up first, the
-    # result is parked at the gateway and delivered at the start of their next
-    # call instead of being discarded.
-    session = ctx.session
+
+@function_tool
+async def browse(ctx: RunContext[Userdata], task: str) -> str:
+    """The computer-use / shopping / browser agent: drives a real web browser on a live
+    website, both to READ and to ACT. Use it for anything that happens on a website -- shopping
+    (add an item to a cart, buy, place an order, check out), booking or reserving, signing up,
+    filling and submitting a public web form, navigating and clicking through pages, as well as
+    reading (find a specific product with its price and reviews, compare options in a store,
+    check live availability or opening hours, pull details a plain search cannot reach). ANY task
+    on a shopping site, store, or general website that is not one of the user's own connected
+    accounts is this tool -- including "add X to my Amazon cart". If the user says "computer use
+    agent", "computer usage agent", "browser", or "shopping agent", they mean this tool. Describe
+    the goal completely. Slower than quick_search (it drives an actual browser), so use it only
+    when a live site visit is genuinely required -- for quick facts use quick_search, and for the
+    user's own accounts (calendar, email, notes, Notion, Slack, smart home) use execute."""
+    logger.info("browse start: user=%s task=%r", ctx.userdata.user_id, task[:200])
+    ctx.userdata.tracer.emit("agent_action", tool="browse", task=task)
     user_id = ctx.userdata.user_id
-
-    async def relay() -> None:
-        heartbeats = 0
-        while True:
-            done, _ = await asyncio.wait({job}, timeout=HEARTBEAT_S)
-            if done:
-                break
-            if heartbeats < MAX_HEARTBEATS:
-                heartbeats += 1
-                try:
-                    session.generate_reply(
-                        instructions=(
-                            "The background task is still running. Give a very brief progress "
-                            "note -- a few words at most, woven into the conversation, not an "
-                            "announcement."
-                        )
-                    )
-                except Exception:
-                    # Session gone; stop talking but keep waiting so the result can be parked.
-                    heartbeats = MAX_HEARTBEATS
+    room = ctx.userdata.room
+    # Refuse a second browse while one is still running -- do NOT start a second
+    # Browser Use run. The model re-fires this tool when the first call is slow;
+    # each run is a live CUA (cost + a duplicate relay), so serialize them.
+    inflight = ctx.userdata.browse_job
+    if inflight is not None and not inflight.done():
+        logger.info("browse re-entry blocked (one already running): user=%s task=%r", user_id, task[:120])
+        ctx.userdata.tracer.emit("agent_action_result", tool="browse", task=task[:200], blocked="already_running")
+        return ("A web browse you already started is still running. Do NOT start another and do NOT guess the "
+                "answer; tell the user briefly that you're still on it -- the result will arrive shortly.")
+    start = await _gateway_browse_start(user_id, task)
+    if start.get("disabled"):
+        return "Web browsing is not enabled yet. Tell the user you cannot browse live sites right now."
+    run_id = start.get("runId")
+    live_url = start.get("liveUrl")
+    live_uuid = "browse-live"
+    card_shown = False
+    if live_url and room is not None:
+        # Show what the browser is doing, mid-screen, exactly like a result card.
+        card = {"uuid": live_uuid, "version": 1, "type": "live", "url": live_url,
+                "title": "Browsing the web", "fallback_text": "Watching the browser work."}
         try:
-            result = await job
+            await _publish_card(room, card)
+            # This run now owns the card slot; a newer browse takes it over and
+            # an older one finishing will find it no longer owned and leave it.
+            ctx.userdata.live_browse_run = run_id
+            card_shown = True
+            ctx.userdata.tracer.emit("agent_action", tool="show_card", card_type="live", title="Browsing the web", auto=True)
         except Exception:
-            logger.exception(
-                "execute background task failed: user=%s agent_task_time_s=%.1f",
-                user_id, time.monotonic() - task_start,
-            )
-            result = None
-        if result is None:
-            tracer.emit("agent_action_result", tool="execute", task=task[:200], error=True)
-            instructions = (
-                "The background task failed. Tell the user briefly and offer to try again."
-            )
-        elif result.startswith(GATEWAY_DEFERRAL_PREFIX):
-            # Past the gateway's own wait the result is no longer in our hands;
-            # when it lands with no client connected, the gateway parks it itself.
-            # Elapsed here is the gateway wait, not the task's true duration.
-            logger.info(
-                "execute deferred past gateway wait: user=%s elapsed_s=%.1f",
-                user_id, time.monotonic() - task_start,
-            )
-            tracer.emit("agent_action_result", tool="execute", task=task[:200], deferred=True)
-            instructions = (
-                "The background task is taking longer than expected and is still running. "
-                "Tell the user briefly; the result will be delivered when it's ready, "
-                "at the start of their next call if needed."
-            )
-        else:
-            logger.info(
-                "execute late result: user=%s len=%d agent_task_time_s=%.1f",
-                user_id, len(result), time.monotonic() - task_start,
-            )
-            tracer.emit(
-                "agent_action_result",
-                tool="execute",
-                task=task[:200],
-                result=result[:500],
-                agent_task_time_s=round(time.monotonic() - task_start, 1),
-            )
-            instructions = (
-                "The result of the earlier background task just arrived. Relay it naturally "
-                f"as the answer to what the user asked:\n\n{result}"
-            )
-        try:
-            session.generate_reply(instructions=instructions)
-        except Exception:
-            logger.warning("session closed before result could be spoken: user=%s", user_id)
-            if result is not None and not result.startswith(GATEWAY_DEFERRAL_PREFIX):
-                await _park_result(user_id, task, result)
+            logger.exception("failed to publish live card: user=%s", user_id)
+    if not run_id:
+        return "The browser could not start that task. Tell the user briefly and offer to try again."
 
-    t = asyncio.create_task(relay())
-    _relay_tasks.add(t)
-    t.add_done_callback(_relay_tasks.discard)
-    return (
-        "[running] The task needs more time and keeps running in the background. Tell the user "
-        "briefly, in your own words, that you're still on it -- do NOT guess at the answer. "
-        "The real result will arrive shortly as a follow-up for you to relay."
-    )
+    async def _finish_card(result: str | None) -> None:
+        # Swap the live view for a result card as the answer is delivered, which
+        # is what on_deliver exists for. Holding the live WebView after the task
+        # assumed the cloud browser lingers on its final page; when that session
+        # ends instead, the view loses its socket and the user is left staring at
+        # the browser's own "Connection Lost" error for the whole keepalive.
+        # Reusing the same uuid replaces the card in place.
+        if ctx.userdata.live_browse_run != run_id:
+            return
+        if result and not result.startswith(GATEWAY_DEFERRAL_PREFIX):
+            body = result if len(result) <= 1200 else result[:1200].rstrip() + "..."
+            try:
+                await _publish_card(room, {
+                    "uuid": live_uuid, "version": 1, "type": "info",
+                    "title": "Browsing the web", "body": body,
+                    "fallback_text": "Browsing finished.",
+                })
+            except Exception:
+                logger.exception("failed to publish browse result card: user=%s", user_id)
+            await asyncio.sleep(BROWSE_KEEPALIVE_S)
+            if ctx.userdata.live_browse_run != run_id:
+                return  # a newer browse now owns the card; leave it alone
+        ctx.userdata.live_browse_run = None
+        await _dismiss_card(room, live_uuid)
+
+    job = asyncio.ensure_future(_gateway_browse_await(user_id, run_id, task))
+    ctx.userdata.browse_job = job
+
+    def _clear_inflight(_fut: "asyncio.Future[str]") -> None:
+        if ctx.userdata.browse_job is job:
+            ctx.userdata.browse_job = None
+
+    job.add_done_callback(_clear_inflight)
+    on_deliver = _finish_card if card_shown else None
+    return await _run_delegated(ctx, task, "browse", job, on_deliver=on_deliver)
 
 
 def build_llm(engine: str, *, silent_tools: bool = False):
@@ -610,8 +918,19 @@ def build_llm(engine: str, *, silent_tools: bool = False):
         if not os.environ.get("OPENAI_API_KEY"):
             logger.warning("openai engine requested but OPENAI_API_KEY unset; using gemini")
         else:
+            # Pin turn detection instead of relying on plugin defaults: the server
+            # must auto-create a response when the user's turn ends (create_response)
+            # and interrupt the assistant on barge-in (interrupt_response). Without
+            # this, a barge-in during a tool exchange could leave the user's turn
+            # with no response -- dead air until they spoke again.
             return openai.realtime.RealtimeModel(
                 model=os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1"),
+                turn_detection=TurnDetection(
+                    type="semantic_vad",
+                    eagerness="medium",
+                    create_response=True,
+                    interrupt_response=True,
+                ),
             )
     return google.beta.realtime.RealtimeModel(
         model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
@@ -679,10 +998,60 @@ CARD_TOOL_SCHEMA = {
 }
 
 
-def _watch_video(ctx: JobContext, holder: FrameHolder) -> None:
+def _capture_source(track_name: str | None) -> str:
+    """Which mode a session actually ran in, from the published track name.
+    Both clients name the glasses feed "glasses"; the phone camera comes from
+    the SDK's own publish path, which names it "camera" on iOS and leaves it
+    unnamed on Android (setCameraEnabled -> createVideoTrack(name = "")), so an
+    empty name reads as phone too. This is ground truth in the sense that it
+    reflects what was really sent rather than what the client claimed, which has
+    mattered here: a source-switch race once published the phone camera while
+    the app was in glasses mode. A name that is neither is "unknown" rather than
+    assumed, because a confidently wrong condition label is worse for the study
+    than a missing one."""
+    name = (track_name or "").strip().lower()
+    if name.startswith("glasses"):
+        return "glasses"
+    if name == "" or name.startswith("camera"):
+        return "phone"
+    return "unknown"
+
+
+def _watch_video(ctx: JobContext, holder: FrameHolder, tracer: "Tracer",
+                 declared_source: str | None = None) -> dict[str, str]:
     """Keep holder current with the user's camera. Runs beside the realtime
     model's own video consumption; this copy exists so tool calls can attach
-    the exact frame the user is looking at."""
+    the exact frame the user is looking at. Also labels the session with the
+    capture mode, which the 2-day counterbalanced study filters on.
+
+    Returns the observed label so the caller can repeat it at session end: the
+    trace queue trims oldest-first on overflow, and the first events of a call
+    are exactly the ones carrying the label."""
+
+    seen: set[str] = set()
+    observed: dict[str, str] = {}
+
+    def note_source(track_name: str | None) -> None:
+        source = _capture_source(track_name)
+        if source in seen:
+            return
+        seen.add(source)
+        if source != "unknown":
+            observed.setdefault("source", source)
+        logger.info("capture source: %s (track=%r)", source, track_name)
+        mismatch = declared_source not in (None, "", source) and source != "unknown"
+        tracer.emit(
+            "capture_source",
+            source=source,
+            track=track_name or "",
+            declared=declared_source or "",
+            # The client said one mode and published the other. Worth surfacing
+            # rather than silently trusting either: this is exactly what the
+            # source-switch race produced.
+            mismatch=mismatch,
+        )
+        if mismatch:
+            logger.warning("capture source mismatch: declared=%s observed=%s", declared_source, source)
 
     def start_reader(track: rtc.Track) -> None:
         async def read() -> None:
@@ -690,6 +1059,7 @@ def _watch_video(ctx: JobContext, holder: FrameHolder) -> None:
             async for ev in stream:
                 holder.frame = ev.frame
                 holder.rotation = int(getattr(ev, "rotation", 0) or 0)
+                holder.arrived_at = time.time()
 
         t = asyncio.create_task(read())
         _relay_tasks.add(t)
@@ -698,12 +1068,16 @@ def _watch_video(ctx: JobContext, holder: FrameHolder) -> None:
     @ctx.room.on("track_subscribed")
     def _on_track(track: rtc.Track, publication: rtc.TrackPublication, participant: rtc.RemoteParticipant) -> None:
         if track.kind == rtc.TrackKind.KIND_VIDEO:
+            note_source(getattr(publication, "name", None) or getattr(track, "name", None))
             start_reader(track)
 
     for p in ctx.room.remote_participants.values():
         for pub in p.track_publications.values():
             if pub.track is not None and pub.track.kind == rtc.TrackKind.KIND_VIDEO:
+                note_source(getattr(pub, "name", None) or getattr(pub.track, "name", None))
                 start_reader(pub.track)
+
+    return observed
 
 
 async def entrypoint(ctx: JobContext):
@@ -734,14 +1108,20 @@ async def entrypoint(ctx: JobContext):
     # Corvus: an intercept brief in the same metadata, or None for a normal call.
     corvus_brief = brief_from_metadata(meta)
     intercept = InterceptSession(corvus_brief) if corvus_brief else None
+    # What the client said it was capturing. The observed track name is better
+    # evidence, but a glasses call whose glasses never stream publishes no video
+    # track at all, so without this those sessions would go unlabelled -- and
+    # they are exactly the glasses-arm failures, which would bias the study.
+    declared_source = meta.get("source") or None
     user_id = participant.identity or "demo"
     logger.info("session start: user=%s engine=%s", user_id, engine)
 
-    frames = FrameHolder()
-    _watch_video(ctx, frames)
-
     tracer = Tracer(user_id)
-    tracer.emit("session_start", engine=engine, room=ctx.room.name)
+    tracer.emit("session_start", engine=engine, room=ctx.room.name,
+                source_declared=declared_source or "")
+
+    frames = FrameHolder()
+    observed_source = _watch_video(ctx, frames, tracer, declared_source)
     # The trace pump POSTs to upstream's gateway, which Corvus does not run --
     # and _gateway_url() subscripts os.environ, so every flush raises KeyError,
     # requeues, and retries every few seconds. It also kept the worker from
@@ -754,7 +1134,11 @@ async def entrypoint(ctx: JobContext):
         if pump is None:
             return
         pump.cancel()
-        tracer.emit("session_end")
+        # The label rides the last event as well as the first. session_start
+        # sits at the head of the queue, which is what an overflow trims, and
+        # this one gets the end-of-call retries.
+        tracer.emit("session_end", source_declared=declared_source or "",
+                    source_observed=observed_source.get("source", ""))
         # Last chance before the process exits -- a failed attempt re-queues,
         # so retry a couple of times instead of losing the tail of the call.
         for attempt in range(3):
@@ -833,9 +1217,12 @@ async def entrypoint(ctx: JobContext):
 
     show_card = function_tool(_show_card, name="show_card")
 
+    userdata = Userdata(user_id=user_id, frames=frames, tracer=tracer, room=ctx.room)
+    staleness = StalenessSampler(frames)
     session = AgentSession(
         llm=build_llm(engine, silent_tools=intercept is not None),
-        userdata=Userdata(user_id=user_id, frames=frames, tracer=tracer, room=ctx.room),
+        userdata=userdata,
+        video_sampler=staleness,
     )
 
     # The transcript pair the study runs on: final ASR of what the user said,
@@ -851,6 +1238,13 @@ async def entrypoint(ctx: JobContext):
         text = re.sub(r"<ctrl\d+>", "", text).strip()
         if not text or role not in ("user", "assistant"):
             return
+        if role == "user" and staleness.last_admit:
+            logger.info(
+                "view age at end of user turn: %.2fs",
+                time.time() - staleness.last_admit,
+            )
+        if role == "assistant":
+            userdata.spoken.append(text)
         tracer.emit(
             "user_utterance" if role == "user" else "agent_utterance",
             text=text,
@@ -861,7 +1255,7 @@ async def entrypoint(ctx: JobContext):
         agent=Agent(
             instructions=intercept.instructions if intercept else INSTRUCTIONS,
             tools=intercept.tools() if intercept
-            else [execute, quick_search, show_card, save_note, recall_notes, delete_note],
+            else [execute, browse, quick_search, show_card, save_note, recall_notes, delete_note],
         ),
         room=ctx.room,
         # Video is opt-in (RoomOptions.video_input defaults to False); without
@@ -890,19 +1284,83 @@ async def entrypoint(ctx: JobContext):
 
     # Results that finished after a previous call ended are waiting at the
     # gateway; deliver them up front so a hangup never discards an answer.
-    pending = await _drain_pending(user_id)
+    # Dead app connections ride the same opening beat: one brief mention,
+    # then silence -- the fix lives in Settings -> Connected Apps.
+    pending, stale_apps = await asyncio.gather(_drain_pending(user_id), _apps_needing_reconnect(user_id))
+    reconnect_note = ""
+    if stale_apps:
+        logger.info("apps need reconnect: user=%s apps=%s", user_id, stale_apps)
+        tracer.emit("reconnect_prompt", apps=stale_apps)
+        reconnect_note = (
+            f"Also mention once, briefly and in passing, that {' and '.join(stale_apps)} needs "
+            "reconnecting under Settings -> Connected Apps before related tasks will work. "
+            "Do not bring it up again during this call."
+        )
     if pending:
         logger.info("delivering parked results: user=%s count=%d", user_id, len(pending))
         joined = "\n\n".join(pending)
+        tracer.emit("parked_relay", count=len(pending), chars=len(joined))
         try:
+            # Observed failure: "greet briefly and relay" produced a greeting and
+            # nothing else, and the drained result was gone. The instruction now
+            # makes the result the whole point of the turn.
             session.generate_reply(
                 instructions=(
-                    "Tasks the user started during an earlier call finished while they were "
-                    "away. Greet them briefly and relay the results naturally:\n\n" + joined
+                    "The user hung up before a task they asked for was finished. It has finished "
+                    "now, and THE RESULT BELOW IS WHAT YOU MUST SAY. Do not just greet them. Say one "
+                    "short phrase like 'While you were away, that finished', then relay the result "
+                    "in full -- every key point, in your own words, in a few sentences. Do not ask "
+                    "what they want next until you have relayed it.\n\n" + joined
+                    + ("\n\n" + reconnect_note if reconnect_note else "")
+                    + "\n\nRemember: relay the result above now."
                 )
             )
         except Exception:
             logger.exception("failed to deliver parked results: user=%s content=%s", user_id, joined[:500])
+
+        keywords = _relay_keywords(joined)
+        needed = _relay_needed(keywords)
+        # Same rule as the late relay: only speech from after the parked result
+        # was handed over can count as having said it, so anything spoken
+        # earlier in the call cannot satisfy the check by coincidence.
+        baseline = len(userdata.spoken)
+
+        def relay_hits() -> int:
+            return _relay_hits(userdata.spoken[baseline:], keywords)
+
+        async def verify_relay() -> None:
+            # Safety net: the drain is destructive, so if the assistant never
+            # actually says the result, park it again for the next call. A long
+            # result takes a while to speak (a 2k-char summary measured ~35s), so
+            # poll rather than judge at a fixed instant; if the call ends first,
+            # the CancelledError branch re-parks it.
+            try:
+                for _ in range(18):
+                    await asyncio.sleep(5)
+                    if not keywords or relay_hits() >= needed:
+                        tracer.emit("parked_relay_ok", hits=relay_hits(), keywords=len(keywords))
+                        return
+                verdict = "timeout"
+            except asyncio.CancelledError:
+                if not keywords or relay_hits() >= needed:
+                    return
+                verdict = "call_ended"
+            logger.warning(
+                "parked result not relayed (%s, hits=%d/%d); re-parking: user=%s",
+                verdict, relay_hits(), len(keywords), user_id,
+            )
+            tracer.emit("parked_relay_failed", reason=verdict, hits=relay_hits(), keywords=len(keywords))
+            for text in pending:
+                await _park_text(user_id, text)
+
+        t = asyncio.create_task(verify_relay())
+        _relay_tasks.add(t)
+        t.add_done_callback(_relay_tasks.discard)
+    elif reconnect_note:
+        try:
+            session.generate_reply(instructions=reconnect_note)
+        except Exception:
+            logger.exception("failed to deliver reconnect note: user=%s", user_id)
 
 
 async def mission_request(request):

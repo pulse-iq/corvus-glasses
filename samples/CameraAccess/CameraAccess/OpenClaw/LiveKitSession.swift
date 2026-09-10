@@ -71,6 +71,9 @@ final class LiveKitSession: NSObject, ObservableObject {
     let facts: [Fact]
     let items: [Item]
     let imageURL: String?
+    /// For the "live" type: an https page (a live browser viewer) to load in a
+    /// webview. Requires JavaScript and a WebSocket, both on by default in WKWebView.
+    let url: String?
     let fallbackText: String
   }
 
@@ -80,15 +83,37 @@ final class LiveKitSession: NSObject, ObservableObject {
     card = nil
   }
   @Published private(set) var localVideoTrack: LocalVideoTrack?
+  // The glasses track is created and rendered locally immediately, but its
+  // publish to the agent is deferred until the first frame arrives (see start()).
+  private var pendingGlassesTrack: LocalVideoTrack?
   /// Camera-only preview while no call is active. The camera IS this app;
   /// hanging up stops the listening, not the seeing.
   @Published private(set) var previewTrack: LocalVideoTrack?
 
-  let room = Room()
+  // suspendLocalVideoTracksInBackground defaults to true, and Room's
+  // appDidEnterBackground suspends every local video publication whose source
+  // is .camera -- which includes the glasses buffer track, since it publishes
+  // as .camera to keep mute/freeze/agent logic identical. Locking the phone
+  // therefore muted and stopped the glasses video exactly like the freeze
+  // button: frames kept arriving from the glasses and kept being pushed into
+  // the capturer, but the media track was disabled, so nothing reached the
+  // sender and the agent's held frame stayed frozen at the moment of lock.
+  // That option exists for apps whose AVCaptureSession dies in the background;
+  // these frames come from the glasses over Bluetooth, so it does not apply.
+  let room = Room(roomOptions: RoomOptions(suspendLocalVideoTracksInBackground: false))
 
   override init() {
     super.init()
     room.add(delegate: self)
+    // Route call audio to the glasses (Bluetooth HFP) instead of the phone.
+    // LiveKit's playAndRecord config already allows Bluetooth, but it prefers the
+    // built-in speaker by default -- which overrode the glasses route once video
+    // streaming displaced the glasses' A2DP audio. Not preferring the speaker
+    // lets iOS route to the glasses' HFP (8kHz, two-way) when they're connected.
+    // Set up front -- never a mid-call setPreferredInput, which breaks the
+    // route (the "deafness" bug). start() then picks per capture source, since
+    // phone mode has no Bluetooth route to yield to.
+    AudioManager.shared.isSpeakerOutputPreferred = false
   }
 
   var isActive: Bool { state == .connected || state == .connecting }
@@ -99,7 +124,6 @@ final class LiveKitSession: NSObject, ObservableObject {
   var missionWorkerIdentity: String?
   var missionCaptureSource: CaptureSource?
   var missionEngine: IntelligenceEngine?
-  private var lifecycleGeneration = 0
   var missionTransportConnected: Bool { room.connectionState == .connected }
   var missionFrame: UIImage? { frameGrabber.latestImage() }
   var hasFreshMissionFrame: Bool { frameGrabber.isFresh }
@@ -269,11 +293,30 @@ final class LiveKitSession: NSObject, ObservableObject {
   private final class GlassesCapturerBox: @unchecked Sendable {
     var capturer: BufferCapturer?
     var sawFrame = false
+    var lastFrameAt: CFAbsoluteTime = 0
   }
 
   /// Flips on the first glasses frame; the call screen shows its waiting
   /// placeholder until then.
   @Published private(set) var hasGlassesFrame = false
+
+  /// Frames stopped arriving after they had started -- the glasses were taken
+  /// off or folded (their camera cuts when doffed). Brings the "put them on"
+  /// reminder back even after the first frame, so the screen never sits black
+  /// with no guidance.
+  @Published private(set) var glassesFrameStale = false
+  private var glassesFrameMonitor: Task<Void, Never>?
+
+  /// True from the moment a glasses call connects until its first video frame
+  /// arrives (or a short grace elapses). Keeps the "Connecting" spinner up
+  /// while the glasses video is still establishing, so a call that is merely
+  /// warming up never flashes the "put them on" reminder.
+  @Published private(set) var videoEstablishing = false
+  private var callConnectedAt: CFAbsoluteTime = 0
+
+  /// Bumped by every start() and by stop(), so an in-flight start() can tell
+  /// that it was superseded while it was waiting on the network.
+  private var startGeneration = 0
 
   private let glassesCapturerBox = GlassesCapturerBox()
 
@@ -283,9 +326,17 @@ final class LiveKitSession: NSObject, ObservableObject {
   /// pinned frame.
   nonisolated func pushGlassesFrame(_ pixelBuffer: CVPixelBuffer) {
     glassesCapturerBox.capturer?.capture(pixelBuffer)
+    glassesCapturerBox.lastFrameAt = CFAbsoluteTimeGetCurrent()
     if !glassesCapturerBox.sawFrame {
       glassesCapturerBox.sawFrame = true
-      Task { @MainActor in self.hasGlassesFrame = true }
+      Task { @MainActor in
+        self.hasGlassesFrame = true
+        // Video has established: drop the connecting spinner.
+        self.videoEstablishing = false
+        // First frame is here -- publish the deferred glasses track now that the
+        // buffer publish has a frame to settle its dimensions.
+        await self.publishPendingGlassesTrack()
+      }
     }
   }
 
@@ -302,13 +353,25 @@ final class LiveKitSession: NSObject, ObservableObject {
       state = .failed("Gateway not configured. Check Settings.")
       return
     }
-    lifecycleGeneration += 1
-    let generation = lifecycleGeneration
+    // A start() spans two network round trips (ticket fetch, then room connect),
+    // and stop() cannot interrupt it. Without this token, a source flip during
+    // that window publishes the camera latched below into a room the app already
+    // believes it stopped, and the trailing state = .connected overwrites the
+    // .disconnected that stop() wrote, leaving a zombie session that blocks
+    // every later redial. Each start claims a generation; stop() and a stale
+    // source both invalidate it.
+    startGeneration &+= 1
+    let generation = startGeneration
     state = .connecting
     await stopPreview()
-    guard generation == lifecycleGeneration, !Task.isCancelled else { return }
+    guard generation == startGeneration, !Task.isCancelled else { return }
 
     usingGlassesSource = selectedSource == .glasses
+    // Glasses mode declines the speaker so iOS routes to their HFP. Phone mode has
+    // no such route, and declining leaves call audio on the receiver -- the earpiece,
+    // inaudible unless the phone is held to the ear. The speaker preset only adds
+    // .defaultToSpeaker, so wired and Bluetooth headsets still take precedence.
+    AudioManager.shared.isSpeakerOutputPreferred = !usingGlassesSource
 
     // Named so a failure says which call threw. These three fail in completely
     // different places -- the token endpoint, the room, the microphone -- and
@@ -318,7 +381,10 @@ final class LiveKitSession: NSObject, ObservableObject {
     var stage = "ticket"
     do {
       let ticket = try await fetchTicket()
-      guard generation == lifecycleGeneration, !Task.isCancelled else { return }
+      // A source flipped while the ticket was in flight would publish the
+      // wrong camera into this room; treat it like a superseded start.
+      guard generation == startGeneration, !Task.isCancelled,
+            usingGlassesSource == (selectedSource == .glasses) else { return }
       if pendingSessionContext?["mode"] == "mission" {
         guard ticket.missionVersion == 1, let identity = ticket.workerIdentity, !identity.isEmpty else {
           throw NSError(domain: "Mission", code: 1, userInfo: [NSLocalizedDescriptionKey: "This gateway does not support mission protocol v1. Update the gateway and worker."])
@@ -333,45 +399,65 @@ final class LiveKitSession: NSObject, ObservableObject {
       await registerCaptionHandler()
       await registerCardHandler()
       await registerTranscriptHandler()
-      guard generation == lifecycleGeneration, !Task.isCancelled else { return }
+      guard generation == startGeneration, !Task.isCancelled else { return }
       stage = "connect"
       try await room.connect(url: ticket.url, token: ticket.token)
-      guard generation == lifecycleGeneration, !Task.isCancelled else { await room.disconnect(); return }
+      guard generation == startGeneration, !Task.isCancelled else { await room.disconnect(); return }
       stage = "microphone"
       try await room.localParticipant.setMicrophone(enabled: true)
-      guard generation == lifecycleGeneration, !Task.isCancelled else { await room.disconnect(); return }
+      guard generation == startGeneration, !Task.isCancelled else { await room.disconnect(); return }
+      // Diagnose the audio route: do the glasses appear as a Bluetooth HFP input,
+      // and where is output actually going? This tells us whether iOS can route
+      // the call to the glasses at all, or if they aren't a system audio device.
+      let diagSession = AVAudioSession.sharedInstance()
+      NSLog("[Audio] inputs=[%@] output=[%@]",
+            (diagSession.availableInputs ?? []).map { $0.portType.rawValue }.joined(separator: ","),
+            diagSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ","))
+      // The glasses expose a Bluetooth HFP input; select it so the call routes to
+      // the glasses. HFP is two-way, so the output follows the input -- the
+      // agent's voice moves to the glasses too. Done once here as the call audio
+      // comes up (not repeatedly), so it doesn't trip the route-change "deafness" loop.
+      if let hfp = diagSession.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) {
+        if diagSession.currentRoute.inputs.contains(where: { $0.portType == .bluetoothHFP }) {
+          // Already selected before the stream started, which is the order Meta
+          // asks for. Re-selecting a live input here is exactly the mid-call
+          // route change that has caused the glasses to go deaf.
+          NSLog("[Audio] glasses HFP already routed; leaving the route alone")
+        } else {
+          try? diagSession.setPreferredInput(hfp)
+          NSLog("[Audio] selected glasses HFP; output now [%@]",
+                diagSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ","))
+        }
+      }
       // Camera failure (simulator, permission denied) degrades to voice-only
       // rather than killing the call.
       do {
         if usingGlassesSource {
-          // Glasses frames arrive via pushGlassesFrame; publish a buffer
-          // track with camera source so mute/freeze/agent logic is identical.
-          let track = LocalVideoTrack.createBufferTrack(name: "glasses", source: .camera)
-          // Wired before the track starts, exactly as startPreview does it. A
-          // buffer track has no camera to open: until something pushes into
-          // its capturer it has no frames and no dimensions, so publishing
-          // first means publishing an empty track. That published as black --
-          // in the room and on the screen -- while DAT frames kept arriving
-          // and going nowhere, because the box was still pointing at the
-          // preview capturer this track replaces.
+          // Glasses frames arrive via pushGlassesFrame; a buffer track with
+          // camera source keeps mute/freeze/agent logic identical.
+          // reportStatistics enables the per-second outbound-rtp stats poll so
+          // we can log the actual encoded resolution/fps leaving the phone.
+          let track = LocalVideoTrack.createBufferTrack(name: "glasses", source: .camera, reportStatistics: true)
+          // New track, new frame clock: the deferred publish must wait for a
+          // frame on THIS track. A sawFrame left true by the preview track
+          // otherwise published this still-empty call track at once, so the
+          // agent got a video track carrying no frames -- video renders locally
+          // while the server reports "no video access" (e.g. when the room
+          // connects before the glasses start streaming).
+          glassesCapturerBox.sawFrame = false
           glassesCapturerBox.capturer = track.capturer as? BufferCapturer
           try await track.start()
-          guard generation == lifecycleGeneration, !Task.isCancelled else { try? await track.stop(); return }
-          // Explicit encoding, because the SDK's default for a 720-tall track
-          // caps the encoder at 1.7 Mbps and publishes three simulcast layers.
-          // In mission mode nothing but the recorder ever subscribes to this
-          // track, so the two lower layers are wasted CPU and uplink, and the
-          // bitrate cap was the tightest hop in the pipeline after Bluetooth.
-          // Maintain resolution: when the uplink dips, drop frames rather than
-          // blur the labels the recording exists to capture. Keep in step with
-          // the egress bitrate in agent/corvus_mission_storage.py, which
-          // re-encodes this track and cannot add back what is lost here.
-          let publishOptions = VideoPublishOptions(
-            encoding: VideoEncoding(maxBitrate: 4_000_000, maxFps: 24),
-            simulcast: false,
-            degradationPreference: .maintainResolution)
-          _ = try await room.localParticipant.publish(videoTrack: track, options: publishOptions)
+          guard generation == startGeneration, !Task.isCancelled else { try? await track.stop(); return }
+          // Render locally right away -- a LocalVideoTrack shows its captured
+          // frames on screen even before it is published. DEFER the publish to
+          // the agent until the first frame actually arrives
+          // (publishPendingGlassesTrack, from pushGlassesFrame): the buffer
+          // publish blocks on a first frame to settle dimensions, and the first
+          // glasses frame can take >10s over the slow BT link -- which was timing
+          // the publish out (Code 101 -> voice-only) and leaving a black screen
+          // while frames poured in with no track to carry them.
           localVideoTrack = track
+          pendingGlassesTrack = track
         } else {
           // A video-call SDK defaults to the selfie camera; this app is a pair
           // of eyes on the world, so it opens on the back camera.
@@ -396,10 +482,18 @@ final class LiveKitSession: NSObject, ObservableObject {
           error: error.localizedDescription,
           note: usingGlassesSource ? "glasses buffer track" : "phone back camera"))
       }
-      guard generation == lifecycleGeneration, !Task.isCancelled else { await stop(restartPreview: false); return }
+      guard generation == startGeneration, !Task.isCancelled else { await stop(restartPreview: false); return }
       state = .connected
       resetZoom()
       refreshAgentStatus()
+      if usingGlassesSource {
+        videoEstablishing = true
+        callConnectedAt = CFAbsoluteTimeGetCurrent()
+        startGlassesFrameMonitor()
+      }
+      // Frames may already be flowing by now; publish immediately if so, else
+      // the first frame's callback triggers it.
+      if glassesCapturerBox.sawFrame { await publishPendingGlassesTrack() }
     } catch {
       // The stage, not just the message: an intercept that aborts here leaves
       // no turns and no room, so this line is the only account of what went
@@ -410,7 +504,7 @@ final class LiveKitSession: NSObject, ObservableObject {
         kind: "livekit_connect_failed", at: Date(),
         error: error.localizedDescription,
         note: "stage=\(stage) connectionState=\(room.connectionState)"))
-      guard generation == lifecycleGeneration, !Task.isCancelled else { return }
+      guard generation == startGeneration, !Task.isCancelled else { return }
       state = .failed("\(stage): \(error.localizedDescription)")
       agentStatus = .none
       await room.disconnect()
@@ -419,11 +513,104 @@ final class LiveKitSession: NSObject, ObservableObject {
     }
   }
 
+  /// Publishes the deferred glasses video track once the first frame has arrived,
+  /// so the buffer publish settles its dimensions instantly instead of timing out
+  /// waiting for a frame. The track already renders locally.
+  private var glassesPublishInFlight = false
+  private func publishPendingGlassesTrack() async {
+    guard let track = pendingGlassesTrack, state == .connected, !glassesPublishInFlight else { return }
+    glassesPublishInFlight = true
+    defer { glassesPublishInFlight = false }
+    do {
+      // Explicit encoding, because the SDK's default for a 720-tall track
+      // caps the encoder at 1.7 Mbps and publishes three simulcast layers.
+      // In mission mode nothing but the recorder ever subscribes to this
+      // track, so the two lower layers are wasted CPU and uplink, and the
+      // bitrate cap was the tightest hop in the pipeline after the glasses
+      // link. Maintain resolution: when the uplink dips, drop frames rather
+      // than blur the labels the recording exists to capture. Keep in step
+      // with the egress bitrate in agent/corvus_mission_storage.py, which
+      // re-encodes this track and cannot add back what is lost here.
+      _ = try await room.localParticipant.publish(
+        videoTrack: track,
+        options: VideoPublishOptions(
+          encoding: VideoEncoding(maxBitrate: 4_000_000, maxFps: 24),
+          simulcast: false,
+          degradationPreference: .maintainResolution))
+      // Clear only on success so the frame monitor can retry a failed publish.
+      pendingGlassesTrack = nil
+    } catch {
+      NSLog("[LiveKit] glasses video publish failed, will retry: %@", error.localizedDescription)
+    }
+  }
+
+  /// Watches the glasses frame clock while a glasses call is up: once frames
+  /// have started, if none arrive for ~1.5s the glasses are off or folded, so
+  /// flag the stream stale to surface the "put them on" reminder. One cheap
+  /// tick, cancelled on stop.
+  private func startGlassesFrameMonitor() {
+    glassesFrameMonitor?.cancel()
+    glassesFrameMonitor = Task { @MainActor [weak self] in
+      var tick = 0
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        guard let self else { return }
+        self.glassesFrameStale = self.hasGlassesFrame &&
+          CFAbsoluteTimeGetCurrent() - self.glassesCapturerBox.lastFrameAt > 1.5
+        // Every ~2s: what LiveKit is publishing (capture size) and what the
+        // encoder is actually sending to the server (outbound-rtp). If "sent"
+        // is below "publishing", WebRTC downscaled for CPU or bandwidth.
+        tick += 1
+        if tick % 3 == 0, let track = self.localVideoTrack {
+          let publishing = track.dimensions.map { "\($0.width)x\($0.height)" } ?? "?x?"
+          let out = track.statistics?.outboundRtpStream.first
+          let sent: String
+          if let out, let w = out.frameWidth, let h = out.frameHeight {
+            // limit tells us whether the phone-side encoder is holding video
+            // back, and why: "cpu" (phone loaded, e.g. by preview rendering),
+            // "bandwidth" (phone-to-server network), or "none".
+            let limit = out.qualityLimitationReason?.rawValue ?? "n/a"
+            sent = "\(w)x\(h) @ \(String(format: "%.1f", out.framesPerSecond ?? 0)) fps, limit=\(limit)"
+          } else {
+            sent = "stats pending"
+          }
+          // App state is logged alongside so a locked-screen run self-labels:
+          // if "sent to server" fps falls to 0 only while app=background, the
+          // phone-to-server encode is what stops, not the glasses feed.
+          let appState: String
+          switch UIApplication.shared.applicationState {
+          case .active: appState = "active"
+          case .inactive: appState = "inactive"
+          case .background: appState = "background"
+          @unknown default: appState = "unknown"
+          }
+          NSLog("[VideoStats] app=%@ | publishing %@ | sent to server %@", appState, publishing, sent)
+        }
+        // Give the glasses video a grace to establish before falling back from
+        // the connecting spinner to the "put them on" reminder.
+        if self.videoEstablishing, CFAbsoluteTimeGetCurrent() - self.callConnectedAt > 6.0 {
+          self.videoEstablishing = false
+        }
+        // Safety net: frames are flowing but the track never reached the room
+        // (a missed or failed publish on a connect-before-glasses order) --
+        // publish now so the agent actually gets video.
+        if self.state == .connected, self.pendingGlassesTrack != nil, self.glassesCapturerBox.sawFrame {
+          await self.publishPendingGlassesTrack()
+        }
+      }
+    }
+  }
+
+  /// `restartPreview: false` is the mission path: End Mission drops the room
+  /// but the screen belongs to the mission view, which reopens its own preview.
   func stop(restartPreview: Bool = true) async {
-    lifecycleGeneration += 1
+    // Invalidate any start() still waiting on the network so it cannot publish
+    // into, or resurrect, the session we are tearing down here.
+    startGeneration &+= 1
     await stopCapture()
     await room.disconnect()
     localVideoTrack = nil
+    pendingGlassesTrack = nil
     state = .disconnected
     agentStatus = .none
     resetZoom()
@@ -431,13 +618,18 @@ final class LiveKitSession: NSObject, ObservableObject {
     caption = nil
     captionClearTask?.cancel()
     card = nil
+    glassesFrameMonitor?.cancel()
+    glassesFrameMonitor = nil
     glassesCapturerBox.sawFrame = false
+    glassesCapturerBox.lastFrameAt = 0
     hasGlassesFrame = false
+    glassesFrameStale = false
+    videoEstablishing = false
     if restartPreview { await startPreview() }
   }
 
   func stopCapture() async {
-    lifecycleGeneration += 1
+    startGeneration &+= 1
     // Silence subscribed agent speech before awaiting any network cleanup.
     for participant in room.remoteParticipants.values {
       for publication in participant.audioTracks {
@@ -504,10 +696,19 @@ final class LiveKitSession: NSObject, ObservableObject {
   private func handleCardJSON(_ json: String) {
     guard let data = json.data(using: .utf8),
           let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-          let uuid = dict["uuid"] as? String,
-          let type = dict["type"] as? String
+          let uuid = dict["uuid"] as? String
     else {
       NSLog("[LiveKit] ignoring malformed card payload (%d bytes)", json.count)
+      return
+    }
+    // Programmatic dismissal (e.g. a live-view card removed when its task ends):
+    // a control message, not a card to render.
+    if (dict["dismiss"] as? Bool) == true {
+      if card?.uuid == uuid { dismissCard() }
+      return
+    }
+    guard let type = dict["type"] as? String else {
+      NSLog("[LiveKit] ignoring card payload without a type (%d bytes)", json.count)
       return
     }
     let facts = ((dict["facts"] as? [[String: Any]]) ?? []).compactMap { f -> UICard.Fact? in
@@ -531,6 +732,7 @@ final class LiveKitSession: NSObject, ObservableObject {
       facts: facts,
       items: items,
       imageURL: dict["image_url"] as? String,
+      url: dict["url"] as? String,
       fallbackText: (dict["fallback_text"] as? String) ?? "")
   }
 
@@ -572,7 +774,11 @@ final class LiveKitSession: NSObject, ObservableObject {
     request.setValue("Bearer \(GeminiConfig.agentToken)", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     var payload: [String: Any] = [
-      "engine": (missionEngine ?? SettingsManager.shared.intelligenceEngine).rawValue
+      "engine": (missionEngine ?? SettingsManager.shared.intelligenceEngine).rawValue,
+      // Capture mode travels with the ticket so upstream's study can label a
+      // session even when no video track is ever published. The Corvus
+      // gateway ignores it; carried for parity with upstream's wire format.
+      "source": selectedSource == .glasses ? "glasses" : "phone",
     ]
     // Corvus rides along here: the token endpoint copies this into the room
     // token's participant metadata, which the worker already reads. Sending the
@@ -588,6 +794,12 @@ final class LiveKitSession: NSObject, ObservableObject {
 
     let (data, response) = try await URLSession.shared.data(for: request)
     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+      if (response as? HTTPURLResponse)?.statusCode == 401 {
+        // A revoked (or never-approved) account: drop the credential so the
+        // sign-in gate returns at next launch instead of every call failing.
+        SettingsManager.shared.cloudGatewayToken = ""
+        SettingsManager.shared.accountStatus = nil
+      }
       let detail = OpenClawBridge.errorMessage(from: data) ?? "gateway error"
       throw NSError(domain: "LiveKitSession", code: 1, userInfo: [NSLocalizedDescriptionKey: detail])
     }

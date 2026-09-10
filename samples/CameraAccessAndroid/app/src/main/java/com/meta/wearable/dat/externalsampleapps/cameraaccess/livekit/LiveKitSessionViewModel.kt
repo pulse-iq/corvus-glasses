@@ -115,6 +115,9 @@ data class UiCard(
     val items: List<CardItem>,
     val imageUrl: String?,
     val fallbackText: String,
+    // Live-view URL for "live" cards (Browser Use live browser view). Rendered
+    // in a WebView instead of static content.
+    val url: String? = null,
     // Fetched lazily for image cards; arrives via a state update.
     val image: Bitmap? = null,
 )
@@ -141,6 +144,11 @@ data class LiveKitUiState(
     // The rest of the call (mic, speaker, agent) is identical.
     val isGlassesSource: Boolean = false,
     val glassesStreaming: Boolean = false,
+    // True from the moment a glasses call connects until its first video frame
+    // (or a short grace elapses). Keeps the connecting spinner up while the
+    // glasses video is still establishing, instead of flashing the "put them
+    // on" reminder over a call that is only warming up.
+    val videoEstablishing: Boolean = false,
     val caption: Caption? = null,
     val card: UiCard? = null,
 ) {
@@ -210,6 +218,11 @@ class LiveKitSessionViewModel(
     // stale reference during track handoff is harmless.
     @Volatile private var glassesCapturer: GlassesVideoCapturer? = null
 
+    // Clears videoEstablishing after a grace so the connecting spinner falls
+    // back to the "put them on" reminder if glasses video never establishes.
+    private var videoEstablishingJob: Job? = null
+    private val videoEstablishGraceMs = 6_000L
+
     private val httpClient = OkHttpClient.Builder()
         .callTimeout(20, TimeUnit.SECONDS)
         .build()
@@ -274,8 +287,24 @@ class LiveKitSessionViewModel(
     }
 
     private fun handleCardPayload(payload: String) {
+        val json = try {
+            JSONObject(payload)
+        } catch (e: Exception) {
+            Log.w(TAG, "malformed card payload ignored (${payload.length} bytes)")
+            return
+        }
+        // Programmatic dismissal: {"uuid":..., "dismiss":true} clears the shown
+        // card (e.g. the browse live view when the task finishes). A later card
+        // publish supersedes the dismissal, matching dismissCard().
+        if (json.optBoolean("dismiss", false)) {
+            val uuid = json.optString("uuid").takeIf { it.isNotEmpty() }
+            Log.d(TAG, "card dismiss control received uuid=$uuid")
+            uuid?.let { dismissedCardUuid = it }
+            _uiState.update { it.copy(card = null) }
+            return
+        }
         val card = try {
-            parseCard(JSONObject(payload))
+            parseCard(json)
         } catch (e: Exception) {
             null
         }
@@ -324,6 +353,7 @@ class LiveKitSessionViewModel(
             items = items,
             imageUrl = json.optString("image_url").takeIf { it.startsWith("http") },
             fallbackText = json.optString("fallback_text"),
+            url = json.optString("url").takeIf { it.startsWith("http") },
         )
     }
 
@@ -531,7 +561,15 @@ class LiveKitSessionViewModel(
             } catch (e: Exception) {
                 Log.w(TAG, "video unavailable, voice-only: ${e.message}")
             }
-            _uiState.update { it.copy(state = SessionState.Connected, zoomFactor = 1f) }
+            _uiState.update {
+                it.copy(
+                    state = SessionState.Connected,
+                    zoomFactor = 1f,
+                    // Establishing only if the glasses feed is not already live.
+                    videoEstablishing = glasses && !it.glassesStreaming,
+                )
+            }
+            if (glasses) startVideoEstablishGrace()
             refreshAgentStatus()
         } catch (e: Exception) {
             Log.w(TAG, "call failed: ${e.message}")
@@ -548,6 +586,14 @@ class LiveKitSessionViewModel(
         }
     }
 
+    private fun startVideoEstablishGrace() {
+        videoEstablishingJob?.cancel()
+        videoEstablishingJob = viewModelScope.launch {
+            delay(videoEstablishGraceMs)
+            _uiState.update { if (it.videoEstablishing) it.copy(videoEstablishing = false) else it }
+        }
+    }
+
     fun stop() {
         viewModelScope.launch {
             disconnectInternal()
@@ -560,6 +606,7 @@ class LiveKitSessionViewModel(
         attachGrabber(null)
         connectedEngine = null
         captionClearJob?.cancel()
+        videoEstablishingJob?.cancel()
         dismissedCardUuid = null
         _uiState.update {
             it.copy(
@@ -570,6 +617,7 @@ class LiveKitSessionViewModel(
                 zoomFactor = 1f,
                 caption = null,
                 card = null,
+                videoEstablishing = false,
             )
         }
     }
@@ -645,15 +693,25 @@ class LiveKitSessionViewModel(
         val session = Wearables.startStreamSession(
             getApplication(),
             glassesSelector,
-            StreamConfiguration(videoQuality = VideoQuality.MEDIUM, 24),
+            // Match iOS. Only 2, 7, 15, 24 and 30 are legal frame rates; anything
+            // else is snapped to a rung, so the 3 previously requested here was
+            // really being served as 2. 30 is the top rung: ask for everything
+            // and let the SDK ladder settle it. Note this cuts against the
+            // documented ladder, which lowers resolution BEFORE frame rate, so
+            // the risk is losing the 504x896 tier. Drop back down if the source
+            // reports 360x640 or background CPU becomes a problem.
+            StreamConfiguration(videoQuality = VideoQuality.HIGH, 15),
         )
         glassesSession = session
         // Conversion is a plain memcpy but runs per frame; keep it off main.
         glassesFeedJobs += viewModelScope.launch(Dispatchers.Default) {
             var frames = 0L
             session.videoStream.collect { frame ->
-                if (frames == 0L || frames % 100 == 0L) {
-                    Log.i(TAG, "glasses frame #$frames ${frame.width}x${frame.height}")
+                // Source == what the preview renders and what LiveKit is fed.
+                // Below the requested HIGH means the Bluetooth link auto-laddered
+                // the glasses resolution down. ~every 2s at 5 fps.
+                if (frames == 0L || frames % 10 == 0L) {
+                    Log.i(TAG, "[VideoStats] glasses source ${frame.width}x${frame.height} (requested HIGH), frame #$frames")
                 }
                 frames++
                 glassesCapturer?.pushI420(frame.buffer, frame.width, frame.height)
@@ -662,8 +720,15 @@ class LiveKitSessionViewModel(
         glassesFeedJobs += viewModelScope.launch {
             session.state.collect { sessionState ->
                 Log.i(TAG, "glasses session state: $sessionState")
-                _uiState.update { it.copy(glassesStreaming = sessionState == StreamSessionState.STREAMING) }
-                if (sessionState == StreamSessionState.STREAMING) {
+                val streaming = sessionState == StreamSessionState.STREAMING
+                _uiState.update {
+                    it.copy(
+                        glassesStreaming = streaming,
+                        // Video is live: drop the connecting spinner.
+                        videoEstablishing = if (streaming) false else it.videoEstablishing,
+                    )
+                }
+                if (streaming) {
                     glassesRetryCount = 0
                     glassesRetryJob?.cancel()
                     glassesRetryJob = null
@@ -780,8 +845,11 @@ class LiveKitSessionViewModel(
      */
     private suspend fun fetchTicket(engine: IntelligenceEngine): Ticket = withContext(Dispatchers.IO) {
         val baseUrl = SettingsManager.gatewayBaseUrl.trimEnd('/')
+        // Capture mode travels with the ticket so the study can label a session
+        // even when no video track is ever published (see the iOS counterpart).
         val body = JSONObject()
             .put("engine", engine.value)
+            .put("source", if (SettingsManager.captureSource == CaptureSource.GLASSES) "glasses" else "phone")
             .toString()
             .toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
@@ -791,6 +859,13 @@ class LiveKitSessionViewModel(
             .build()
         httpClient.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
+            if (response.code == 401 && SettingsManager.accountEmail != null) {
+                // A signed-in account the gateway no longer honors (revoked or
+                // reverted to pending): drop to the gate instead of a dead call.
+                SettingsManager.accountStatus = "revoked"
+                SettingsManager.signOut()
+                throw IOException("Your account is no longer active")
+            }
             if (!response.isSuccessful) {
                 throw IOException(GatewayApi.errorMessage(text) ?: "gateway error (${response.code})")
             }

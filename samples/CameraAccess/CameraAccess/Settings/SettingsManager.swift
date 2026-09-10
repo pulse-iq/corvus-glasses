@@ -12,16 +12,18 @@ enum AgentBackend: String, CaseIterable {
 
 /// Which realtime model answers. The choice travels to the agent worker as
 /// room-token metadata; the phone never talks to either provider directly.
+// OpenAI is the default engine. The picker renders allCases in declaration
+// order, so listing it first also makes it the left-hand segment.
 enum IntelligenceEngine: String, CaseIterable {
-  case gemini = "gemini"
   case openai = "openai"
+  case gemini = "gemini"
 
   static let defaultsKey = "intelligenceEngine"
 
   var label: String {
     switch self {
-    case .gemini: return "Gemini"
     case .openai: return "OpenAI"
+    case .gemini: return "Gemini"
     }
   }
 }
@@ -59,6 +61,8 @@ final class SettingsManager {
     case openClawGatewayToken
     case cloudGatewayURL
     case cloudGatewayToken
+    case accountEmail
+    case accountStatus
     case geminiSystemPrompt
     case speakerOutputEnabled
     case videoStreamingEnabled
@@ -109,7 +113,7 @@ final class SettingsManager {
   var intelligenceEngine: IntelligenceEngine {
     get {
       guard let raw = defaults.string(forKey: IntelligenceEngine.defaultsKey),
-            let engine = IntelligenceEngine(rawValue: raw) else { return .gemini }
+            let engine = IntelligenceEngine(rawValue: raw) else { return .openai }
       return engine
     }
     set { defaults.set(newValue.rawValue, forKey: IntelligenceEngine.defaultsKey) }
@@ -163,6 +167,20 @@ final class SettingsManager {
     set { defaults.set(newValue, forKey: Key.cloudGatewayToken.rawValue) }
   }
 
+  // MARK: - Account (Google sign-in)
+
+  /// Email of the Google account that created this app's gateway credential.
+  var accountEmail: String? {
+    get { defaults.string(forKey: Key.accountEmail.rawValue) }
+    set { defaults.set(newValue, forKey: Key.accountEmail.rawValue) }
+  }
+
+  /// approved | pending | revoked, as last reported by the gateway.
+  var accountStatus: String? {
+    get { defaults.string(forKey: Key.accountStatus.rawValue) }
+    set { defaults.set(newValue, forKey: Key.accountStatus.rawValue) }
+  }
+
   // MARK: - Audio
 
   var speakerOutputEnabled: Bool {
@@ -189,6 +207,7 @@ final class SettingsManager {
   func resetAll() {
     for key in [Key.geminiAPIKey, .geminiSystemPrompt, .agentBackend, .openClawHost, .openClawPort,
                 .openClawHookToken, .openClawGatewayToken, .cloudGatewayURL, .cloudGatewayToken,
+                .accountEmail, .accountStatus,
                 .speakerOutputEnabled, .videoStreamingEnabled,
                 .proactiveNotificationsEnabled] {
       defaults.removeObject(forKey: key.rawValue)

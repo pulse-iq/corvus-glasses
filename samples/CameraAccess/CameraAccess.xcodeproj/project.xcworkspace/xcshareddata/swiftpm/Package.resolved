@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/facebook/meta-wearables-dat-ios",
       "state" : {
-        "revision" : "b67454b6f081373f757476ecb3b4973bf33bc326",
-        "version" : "0.4.0"
+        "revision" : "9b1b83d791dfebff7afd452e924a256819094b64",
+        "version" : "0.9.0"
       }
     },
     {

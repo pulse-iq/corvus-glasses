@@ -30,9 +30,22 @@
 				<string>corvusglasses</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.visionclaw.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>visionclaw</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- App uses only exempt encryption (standard TLS/HTTPS): skips the TestFlight export-compliance prompt. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- Begin required section for Device Access Toolkit Apps -->
+	<!-- Meta Wearables Device Access Toolkit Setup -->
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
