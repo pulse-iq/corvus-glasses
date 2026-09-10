@@ -167,6 +167,7 @@ earbuds will otherwise win the route and nothing will say so.
 | `Corvus/Interceptor.swift` | the seam, and the record format |
 | `Corvus/RealtimeMedia.swift`, `Corvus/LiveKitRealtimeMedia.swift` | the only door into upstream's LiveKit session |
 | `Corvus/GlassesStreamQuality.swift` | the stream tier picker; the tier is what selects Wi-Fi or Bluetooth |
+| `Corvus/GlassesLink.swift` | link monitor: per-device link state and thermal diagnostics, the refused-session detector that backs off the retry loop, and the wait-state wording that names which layer is pending |
 | `Corvus/*Interceptor.swift` | the three implementations |
 | `Corvus/CorvusLog.swift` | the session log |
 | `agent/` | the deployed realtime worker |

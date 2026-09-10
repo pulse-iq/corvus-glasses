@@ -23,6 +23,8 @@ struct StreamSessionView: View {
   let wearables: WearablesInterface?
   private let wearablesViewModel: WearablesViewModel?
   @StateObject private var viewModel: StreamSessionViewModel
+  /// Names which layer of the glasses link is being waited on.
+  @ObservedObject private var link = GlassesLinkMonitor.shared
   @StateObject private var mission = MissionCoordinator()
   private var missionMode: Bool { !UserDefaults.standard.bool(forKey: "corvus.legacySessionMode") }
   @StateObject private var liveKit = LiveKitSession()
@@ -64,8 +66,12 @@ struct StreamSessionView: View {
     case .reconnecting:
       return ("Reconnecting to glasses", "Make sure your glasses are on and the hinges are open.")
     case nil:
-      return ("Put on your glasses",
-              "Open the hinges and put them on. The camera turns off when they're folded or off your face.")
+      // No typed issue: the wait is on the link itself, and the monitor knows
+      // which layer -- phone cannot see the glasses, glasses seen and session
+      // pending, or the glasses refusing because another session holds them.
+      return link.placeholder
+        ?? ("Put on your glasses",
+            "Open the hinges and put them on. The camera turns off when they're folded or off your face.")
     }
   }
 
@@ -121,6 +127,7 @@ struct StreamSessionView: View {
     }
     .task(id: missionPreviewKey) { await startMissionPreview() }
     .onChange(of: scenePhase) { phase in
+      NSLog("[App] scene %@", String(describing: phase))
       // As in the legacy view: the glasses camera grant lands in a second Meta
       // AI hand-off and is still invisible to checkPermissionStatus at the
       // instant the app foregrounds, so poll without requesting.
@@ -338,6 +345,7 @@ struct StreamSessionView: View {
       }
     }
     .onChange(of: scenePhase) { phase in
+      NSLog("[App] scene %@", String(describing: phase))
       // Camera permission for the glasses is granted in the Meta AI app, in a
       // second hand-off that lands after registration -- usually after the
       // auto-start loop above has spent all four attempts and latched itself

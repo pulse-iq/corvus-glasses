@@ -81,8 +81,15 @@ class StreamSessionViewModel: ObservableObject {
   // glasses stream, not tear the whole call down (DaeHo's "stuck / reconnecting").
   private var userWantsCall = false
   private var reconnectTask: Task<Void, Never>?
+  // Camera replacement is serialised. Stopping a camera whose replacement was
+  // still starting produced videoStreamingError on the replacement and left
+  // the session holding a camera capability it would not release
+  // (capabilityAlreadyActive on every addCamera after that).
+  private var replacingCamera = false
+  private var pendingConfigRestart = false
   // Listener tokens are used to manage DAT SDK event subscriptions
   private var sessionStateListenerToken: AnyListenerToken?
+  private var sessionErrorListenerToken: AnyListenerToken?
   private var stateListenerToken: AnyListenerToken?
   private var videoFrameListenerToken: AnyListenerToken?
   private var errorListenerToken: AnyListenerToken?
@@ -130,10 +137,13 @@ class StreamSessionViewModel: ObservableObject {
       let selector = AutoDeviceSelector(wearables: wearables)
       self.deviceSelector = selector
 
+      // Corvus link monitor: per-device link state, compatibility and thermal
+      // diagnostics, plus the refused-session detector the retry loop consults.
+      GlassesLinkMonitor.shared.attach(wearables: wearables)
       // Monitor device availability
       deviceMonitorTask = Task { @MainActor in
         for await device in selector.activeDeviceStream() {
-          NSLog("[Stream] active device: %@", device.map { String(describing: $0) } ?? "none")
+          GlassesLinkMonitor.shared.noteActiveDevice(device)
           self.hasActiveDevice = device != nil
         }
       }
@@ -225,9 +235,35 @@ class StreamSessionViewModel: ObservableObject {
   /// is watching.
   private func restartCameraForNewConfig() {
     guard let camera, let session = deviceSession, session.state == .started else { return }
-    camera.stop()
-    self.camera = nil
-    beginStream()
+    if replacingCamera {
+      // A replacement is in flight; apply the newest settings once it settles.
+      pendingConfigRestart = true
+      return
+    }
+    replacingCamera = true
+    detachThenRestart(camera, reason: "config change")
+  }
+
+  /// Stops a camera and adds the next one only once the SDK reports it
+  /// detached. `addCamera` on a session that still holds the old capability
+  /// fails, and the stream that did come up after a stacked stop died with
+  /// videoStreamingError a few seconds later.
+  private func detachThenRestart(_ old: Camera, reason: String) {
+    camera = nil
+    old.stop()
+    Task { @MainActor [weak self] in
+      for _ in 0..<30 where old.state != .stopped {
+        try? await Task.sleep(nanoseconds: 100_000_000)
+      }
+      NSLog("[Stream] %@: previous camera %@", reason,
+            old.state == .stopped ? "detached" : "still \(old.state) 3s after stop()")
+      guard let self else { return }
+      guard self.camera == nil, self.deviceSession?.state == .started else {
+        self.replacingCamera = false
+        return
+      }
+      self.beginStream()
+    }
   }
 
   private func streamConfig() -> StreamConfiguration {
@@ -262,10 +298,15 @@ class StreamSessionViewModel: ObservableObject {
         self?.handleSessionState(state)
       }
     }
+    // The session's own error channel names why it stopped (thermal, battery,
+    // DAT app update); the state stream never does.
+    sessionErrorListenerToken = session.errorPublisher.listen { error in
+      Task { @MainActor in GlassesLinkMonitor.shared.noteSessionError(error) }
+    }
   }
 
   private func handleSessionState(_ state: DeviceSessionState) {
-    NSLog("[Stream] device session state: %@", String(describing: state))
+    GlassesLinkMonitor.shared.noteSessionState(state)
     switch state {
     case .started:
       // A camera can only be added to a started session; start it now if the user
@@ -300,6 +341,9 @@ class StreamSessionViewModel: ObservableObject {
   /// starts it. The video frames flow through `camera.stream.videoFramePublisher`.
   private func beginStream() {
     guard let session = deviceSession, session.state == .started else { return }
+    // Two paths can arrive here after a stop (the detach wait and the
+    // reconnect loop); the second must not add a second camera.
+    guard camera == nil else { return }
     do {
       guard let newCamera = try session.addCamera(config: streamConfig()) else {
         glassesIssue = .reconnecting
@@ -318,6 +362,15 @@ class StreamSessionViewModel: ObservableObject {
     } catch {
       NSLog("[Stream] addCamera failed: %@", String(describing: error))
       camera = nil
+      replacingCamera = false
+      if case .capabilityAlreadyActive = error, userWantsCall {
+        // The session still holds a camera this object has no handle to. A
+        // fresh session is the only way back; stopping this one hands the
+        // reconnect loop a clean start.
+        NSLog("[Stream] session holds a stale camera; restarting the device session")
+        deviceSession?.stop()
+        return
+      }
       // Sleeping or out-of-range glasses are a wait, not a hard error.
       glassesIssue = mapDeviceSessionError(error)
     }
@@ -347,10 +400,18 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   private func attachStreamListeners(to stream: MWDATCamera.Stream) {
+    // A replaced camera (config change) keeps emitting for a moment after
+    // stop(); its late .stopped must not be read as the new camera failing.
+    let owner = ObjectIdentifier(stream)
     // Subscribe to stream state changes using the DAT SDK listener pattern
     stateListenerToken = stream.statePublisher.listen { [weak self] state in
       Task { @MainActor [weak self] in
-        self?.updateStatusFromState(state)
+        guard let self else { return }
+        guard self.camera.map({ ObjectIdentifier($0.stream) }) == owner else {
+          NSLog("[Stream] stream state %@ from a camera no longer held, ignored", String(describing: state))
+          return
+        }
+        self.updateStatusFromState(state)
       }
     }
 
@@ -431,6 +492,9 @@ class StreamSessionViewModel: ObservableObject {
     errorListenerToken = stream.errorPublisher.listen { [weak self] error in
       Task { @MainActor [weak self] in
         guard let self else { return }
+        let current = self.camera.map { ObjectIdentifier($0.stream) } == owner
+        NSLog("[Stream] stream error: %@%@", String(describing: error), current ? "" : " (from a replaced camera)")
+        guard current else { return }
         // One voice: glasses-state conditions render as placeholder text on
         // the call screen, never as alert dialogs. Sleeping/absent glasses are
         // a plain wait; everything else maps to a typed issue.
@@ -492,8 +556,10 @@ class StreamSessionViewModel: ObservableObject {
     reconnectTask?.cancel()
     let permission = Permission.camera
     do {
+      let checkStarted = CFAbsoluteTimeGetCurrent()
       let status = try await wearables.checkPermissionStatus(permission)
-      NSLog("[Stream] camera permission status: %@", String(describing: status))
+      GlassesLinkMonitor.shared.notePermissionCheck(String(describing: status),
+                                                    took: CFAbsoluteTimeGetCurrent() - checkStarted)
       if status == .granted {
         await startSession()
         return
@@ -505,12 +571,15 @@ class StreamSessionViewModel: ObservableObject {
       }
       glassesIssue = .permissionNeeded
     } catch {
-      // Sleeping or out-of-range glasses are a wait state, not an error.
-      let text = String(describing: error).lowercased()
-      if text.contains("powered off") || text.contains("disconnected") || text.contains("no device") {
-        NSLog("[Stream] glasses unavailable, waiting: %@", String(describing: error))
+      // Sleeping or out-of-range glasses are a wait state, not an error. The
+      // permission check needs a connected device and fails at once without
+      // one, which is what launch looks like for the first quarter second.
+      switch error {
+      case .noDevice, .noDeviceWithConnection:
+        NSLog("[Link] camera permission check waiting on glasses: %@", error.description)
         glassesIssue = nil
-      } else {
+      default:
+        NSLog("[Link] camera permission check failed: %@", error.description)
         glassesIssue = .reconnecting
       }
     }
@@ -539,7 +608,7 @@ class StreamSessionViewModel: ObservableObject {
       streamingStatus = .waiting
       try session.start()
     } catch {
-      NSLog("[Stream] device session create/start failed: %@", String(describing: error))
+      GlassesLinkMonitor.shared.noteSessionCreateFailed(error)
       glassesIssue = mapDeviceSessionError(error)
       deviceSession = nil
       if userWantsCall {
@@ -565,9 +634,18 @@ class StreamSessionViewModel: ObservableObject {
   /// called repeatedly until it takes.
   func resumeIfPermitted() async -> Bool {
     guard let wearables else { return false }
-    guard let status = try? await wearables.checkPermissionStatus(Permission.camera),
-          status == .granted
-    else { return false }
+    let checkStarted = CFAbsoluteTimeGetCurrent()
+    let status: PermissionStatus?
+    do {
+      status = try await wearables.checkPermissionStatus(Permission.camera)
+      GlassesLinkMonitor.shared.notePermissionCheck(String(describing: status!),
+                                                    took: CFAbsoluteTimeGetCurrent() - checkStarted)
+    } catch {
+      status = nil
+      GlassesLinkMonitor.shared.notePermissionCheck("check failed: \(error.description)",
+                                                    took: CFAbsoluteTimeGetCurrent() - checkStarted)
+    }
+    guard status == .granted else { return false }
     glassesIssue = nil
     userWantsCall = true
     await startSession()
@@ -610,7 +688,11 @@ class StreamSessionViewModel: ObservableObject {
     guard userWantsCall else { return }
     reconnectTask?.cancel()
     reconnectTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: 1_500_000_000)
+      // 1.5 s normally; 10 s once the glasses are refusing sessions outright,
+      // since each attempt then makes them chime and none succeeds until they
+      // are power-cycled.
+      let delay = GlassesLinkMonitor.shared.retryDelay
+      try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
       guard let self, !Task.isCancelled, self.userWantsCall,
             self.streamingStatus != .streaming else { return }
       NSLog("[Stream] auto-reconnect")
@@ -646,6 +728,17 @@ class StreamSessionViewModel: ObservableObject {
     case .stopped:
       currentVideoFrame = nil
       GlassesStreamStatus.shared.clear()
+      // A stopped stream is a dead camera. Detach it, or the reconnect loop
+      // below sees a camera it thinks is alive and spins without ever adding
+      // a new one (observed after two quick config changes: the second stream
+      // stopped and the loop logged "auto-reconnect" every 1.5 s for minutes).
+      pendingConfigRestart = false
+      if let dead = camera {
+        replacingCamera = true
+        detachThenRestart(dead, reason: "stream stopped")
+      } else {
+        replacingCamera = false
+      }
       if userWantsCall {
         // Stream dropped mid-call, usually the glasses coming off or folding.
         // Keep the call alive and keep retrying; prompt the user to put them
@@ -661,6 +754,12 @@ class StreamSessionViewModel: ObservableObject {
     case .streaming:
       streamingStatus = .streaming
       glassesIssue = nil
+      replacingCamera = false
+      if pendingConfigRestart {
+        // Settings changed again while the last replacement was starting.
+        pendingConfigRestart = false
+        restartCameraForNewConfig()
+      }
     }
   }
 }

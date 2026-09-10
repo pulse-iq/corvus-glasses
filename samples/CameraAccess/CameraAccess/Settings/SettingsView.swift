@@ -61,6 +61,7 @@ struct SettingsView: View {
   @AppStorage(GlassesStreamFrameRate.defaultsKey) private var streamFrameRateRaw = GlassesStreamFrameRate.fps15.rawValue
   @AppStorage(GlassesStreamCodec.defaultsKey) private var streamCodecRaw = GlassesStreamCodec.hevc.rawValue
   @ObservedObject private var streamStatus = GlassesStreamStatus.shared
+  @ObservedObject private var link = GlassesLinkMonitor.shared
 
   var body: some View {
     NavigationView {
@@ -103,6 +104,13 @@ struct SettingsView: View {
             ForEach(GlassesStreamCodec.allCases) { codec in
               Text(codec.label).tag(codec.rawValue)
             }
+          }
+          HStack {
+            Text("Link")
+            Spacer()
+            Text(link.summary)
+              .foregroundStyle(.secondary)
+              .multilineTextAlignment(.trailing)
           }
           HStack {
             Text("Now")
