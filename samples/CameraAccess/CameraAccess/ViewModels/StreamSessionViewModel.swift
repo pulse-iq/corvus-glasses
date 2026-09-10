@@ -132,6 +132,7 @@ class StreamSessionViewModel: ObservableObject {
       // Monitor device availability
       deviceMonitorTask = Task { @MainActor in
         for await device in selector.activeDeviceStream() {
+          NSLog("[Stream] active device: %@", device.map { String(describing: $0) } ?? "none")
           self.hasActiveDevice = device != nil
         }
       }
@@ -230,6 +231,7 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   private func handleSessionState(_ state: DeviceSessionState) {
+    NSLog("[Stream] device session state: %@", String(describing: state))
     switch state {
     case .started:
       // A camera can only be added to a started session; start it now if the user
@@ -280,6 +282,7 @@ class StreamSessionViewModel: ObservableObject {
         newCamera.stream.start()
       }
     } catch {
+      NSLog("[Stream] addCamera failed: %@", String(describing: error))
       camera = nil
       // Sleeping or out-of-range glasses are a wait, not a hard error.
       glassesIssue = mapDeviceSessionError(error)
@@ -456,6 +459,7 @@ class StreamSessionViewModel: ObservableObject {
     let permission = Permission.camera
     do {
       let status = try await wearables.checkPermissionStatus(permission)
+      NSLog("[Stream] camera permission status: %@", String(describing: status))
       if status == .granted {
         await startSession()
         return
@@ -501,6 +505,7 @@ class StreamSessionViewModel: ObservableObject {
       streamingStatus = .waiting
       try session.start()
     } catch {
+      NSLog("[Stream] device session create/start failed: %@", String(describing: error))
       glassesIssue = mapDeviceSessionError(error)
       deviceSession = nil
       if userWantsCall {
@@ -602,6 +607,7 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   private func updateStatusFromState(_ state: StreamState) {
+    NSLog("[Stream] stream state: %@", String(describing: state))
     switch state {
     case .stopped:
       currentVideoFrame = nil
