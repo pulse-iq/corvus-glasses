@@ -82,6 +82,19 @@
 	<string>This app needs access to save photos captured from your glasses.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>This app creates reminders when you ask the assistant to remind you about something.</string>
+	<!-- The DAT SDK's Wi-Fi Aware transport advertises this service from the
+	     glasses; the phone subscribes to it. Requires the com.apple.developer.wifi-aware
+	     entitlement and iOS 26. Without both the SDK stays on Bluetooth Classic. -->
+	<key>WiFiAwareServices</key>
+	<dict>
+		<key>_meta-datax._tcp</key>
+		<dict>
+			<key>Publishable</key>
+			<dict/>
+			<key>Subscribable</key>
+			<dict/>
+		</dict>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

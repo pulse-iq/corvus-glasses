@@ -10,5 +10,10 @@
 	<true/>
 	<key>com.apple.developer.networking.wifi-info</key>
 	<true/>
+	<key>com.apple.developer.wifi-aware</key>
+	<array>
+		<string>Subscribe</string>
+		<string>Publish</string>
+	</array>
 </dict>
 </plist>
