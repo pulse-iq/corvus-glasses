@@ -45,6 +45,9 @@ struct StreamSessionView: View {
   /// and the coordinator builds its interceptor once in init, so without a
   /// watcher on it the picker silently did nothing until the next relaunch.
   @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.liveKit.rawValue
+  @AppStorage(GlassesStreamQuality.defaultsKey) private var streamQualityRaw = GlassesStreamQuality.high.rawValue
+  @AppStorage(GlassesStreamFrameRate.defaultsKey) private var streamFrameRateRaw = GlassesStreamFrameRate.fps15.rawValue
+  @AppStorage(GlassesStreamCodec.defaultsKey) private var streamCodecRaw = GlassesStreamCodec.hevc.rawValue
 
   private var captureSource: CaptureSource {
     CaptureSource(rawValue: captureSourceRaw) ?? .iPhoneCamera
@@ -132,6 +135,15 @@ struct StreamSessionView: View {
       }
     }
     .onDisappear { glassesResumeTask?.cancel() }
+    .onChange(of: streamQualityRaw) { raw in
+      if let quality = GlassesStreamQuality(rawValue: raw) { viewModel.updateResolution(quality.resolution) }
+    }
+    .onChange(of: streamFrameRateRaw) { raw in
+      if let rate = GlassesStreamFrameRate(rawValue: raw) { viewModel.updateFrameRate(rate) }
+    }
+    .onChange(of: streamCodecRaw) { raw in
+      if let codec = GlassesStreamCodec(rawValue: raw) { viewModel.updateCodec(codec) }
+    }
   }
 
   /// Changes when a mission ends or the capture source changes, so the preview
@@ -299,6 +311,15 @@ struct StreamSessionView: View {
           await liveKit.stop()
         }
       }
+    }
+    .onChange(of: streamQualityRaw) { raw in
+      if let quality = GlassesStreamQuality(rawValue: raw) { viewModel.updateResolution(quality.resolution) }
+    }
+    .onChange(of: streamFrameRateRaw) { raw in
+      if let rate = GlassesStreamFrameRate(rawValue: raw) { viewModel.updateFrameRate(rate) }
+    }
+    .onChange(of: streamCodecRaw) { raw in
+      if let codec = GlassesStreamCodec(rawValue: raw) { viewModel.updateCodec(codec) }
     }
     .onChange(of: interceptorRaw) { raw in
       // Rebuilds the interceptor in place, so the choice applies to the next

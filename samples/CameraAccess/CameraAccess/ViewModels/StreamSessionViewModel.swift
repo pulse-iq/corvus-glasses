@@ -48,7 +48,7 @@ class StreamSessionViewModel: ObservableObject {
   @Published var errorMessage: String = ""
   @Published var hasActiveDevice: Bool = false
   @Published var streamingMode: StreamingMode = .glasses
-  @Published var selectedResolution: StreamingResolution = .medium
+  @Published var selectedResolution: StreamingResolution = GlassesStreamQuality.stored.resolution
 
   var isStreaming: Bool {
     streamingStatus != .stopped
@@ -114,7 +114,8 @@ class StreamSessionViewModel: ObservableObject {
   // still a large enough request to negotiate up, but leaving more bits per
   // frame, which is what a vision model reading stills actually wants. It also
   // halves the software decode cost while the screen is locked.
-  private let requestedFrameRate: UInt = 15
+  private var requestedFrameRate: UInt = UInt(GlassesStreamFrameRate.stored.rawValue)
+  private var selectedCodec: GlassesStreamCodec = GlassesStreamCodec.stored
   private var fpsCount: Int = 0
   private var fpsWindowStart: Date = .now
   // One-shot guards so the compressed-frame path reports itself once, not per frame.
@@ -155,10 +156,12 @@ class StreamSessionViewModel: ObservableObject {
   private var lastAnalysisFrameAt: CFAbsoluteTime = 0
 
   private func forwardAnalysisFrame(_ pixelBuffer: CVPixelBuffer) {
-    guard let onAnalysisFrame else { return }
     let now = CFAbsoluteTimeGetCurrent()
     guard now - lastAnalysisFrameAt >= 0.4 else { return }
     lastAnalysisFrameAt = now
+    GlassesStreamStatus.shared.note(CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
+                                           height: CVPixelBufferGetHeight(pixelBuffer)))
+    guard let onAnalysisFrame else { return }
     let rect = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(pixelBuffer),
                       height: CVPixelBufferGetHeight(pixelBuffer))
     guard let cgImage = cpuCIContext.createCGImage(CIImage(cvPixelBuffer: pixelBuffer), from: rect) else { return }
@@ -191,9 +194,40 @@ class StreamSessionViewModel: ObservableObject {
   /// Store the resolution to use for the next stream. In 0.9 the config is applied
   /// when the camera is added, so this only takes effect when not streaming.
   func updateResolution(_ resolution: StreamingResolution) {
-    guard !isStreaming else { return }
+    guard selectedResolution != resolution else { return }
     selectedResolution = resolution
     NSLog("[Stream] Resolution changed to %@", resolutionLabel)
+    restartCameraForNewConfig()
+  }
+
+  func updateFrameRate(_ frameRate: GlassesStreamFrameRate) {
+    guard requestedFrameRate != UInt(frameRate.rawValue) else { return }
+    requestedFrameRate = UInt(frameRate.rawValue)
+    NSLog("[Stream] Frame rate changed to %u", requestedFrameRate)
+    restartCameraForNewConfig()
+  }
+
+  func updateCodec(_ codec: GlassesStreamCodec) {
+    guard selectedCodec != codec else { return }
+    selectedCodec = codec
+    NSLog("[Stream] Codec changed to %@", codec.rawValue)
+    // The decoder holds a session for the previous format; drop it so the
+    // next compressed frame rebuilds one, and a raw stream never touches it.
+    videoDecoder.invalidateSession()
+    loggedUndecodedFrame = false
+    restartCameraForNewConfig()
+  }
+
+  /// Applies a config change at once. The SDK has no reconfigure call, but a
+  /// stopped camera can be replaced on the same started session, so the live
+  /// preview picks up the new config in a couple of seconds. Settings is
+  /// disabled during a mission, so this never restarts a stream the recorder
+  /// is watching.
+  private func restartCameraForNewConfig() {
+    guard let camera, let session = deviceSession, session.state == .started else { return }
+    camera.stop()
+    self.camera = nil
+    beginStream()
   }
 
   private func streamConfig() -> StreamConfiguration {
@@ -211,13 +245,13 @@ class StreamSessionViewModel: ObservableObject {
     // What every tier actually resolves to on this SDK and device. If .high is
     // not 720x1280 here, then 504x896 was the ceiling all along and there was
     // never a step-down to chase.
-    NSLog("[Stream] SDK resolution tiers: %@ | requesting %@ @ %u fps, codec hvc1",
+    NSLog("[Stream] SDK resolution tiers: %@ | requesting %@ @ %u fps, codec %@",
           StreamingResolution.allCases
             .map { "\($0)=\($0.videoFrameSize.width)x\($0.videoFrameSize.height)" }
             .joined(separator: " "),
-          resolutionLabel, requestedFrameRate)
+          resolutionLabel, requestedFrameRate, selectedCodec.rawValue)
     return StreamConfiguration(
-      videoCodec: VideoCodec.hvc1,
+      videoCodec: selectedCodec.videoCodec,
       resolution: selectedResolution,
       frameRate: requestedFrameRate)
   }
@@ -611,6 +645,7 @@ class StreamSessionViewModel: ObservableObject {
     switch state {
     case .stopped:
       currentVideoFrame = nil
+      GlassesStreamStatus.shared.clear()
       if userWantsCall {
         // Stream dropped mid-call, usually the glasses coming off or folding.
         // Keep the call alive and keep retrying; prompt the user to put them

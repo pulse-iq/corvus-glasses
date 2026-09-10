@@ -57,6 +57,10 @@ struct SettingsView: View {
   @AppStorage("corvus.transcribeAnswers") private var transcribeAnswers = true
   @AppStorage("corvus.audioRouteMode") private var audioRouteRaw = AudioRouteMode.glassesBothWays.rawValue
   @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.liveKit.rawValue
+  @AppStorage(GlassesStreamQuality.defaultsKey) private var streamQualityRaw = GlassesStreamQuality.high.rawValue
+  @AppStorage(GlassesStreamFrameRate.defaultsKey) private var streamFrameRateRaw = GlassesStreamFrameRate.fps15.rawValue
+  @AppStorage(GlassesStreamCodec.defaultsKey) private var streamCodecRaw = GlassesStreamCodec.hevc.rawValue
+  @ObservedObject private var streamStatus = GlassesStreamStatus.shared
 
   var body: some View {
     NavigationView {
@@ -76,6 +80,39 @@ struct SettingsView: View {
           }
           Toggle("Watch the camera screen", isOn: $watchOnCameraScreen)
           Toggle("Show detection overlay", isOn: $showWatcherHUD)
+        }
+
+        Section(header: Text("Glasses stream"), footer: Text(
+          "Quality picks the link: High asks the glasses for Wi-Fi and delivers "
+          + "720x1280, falling back to Bluetooth at 504x896 on its own when Wi-Fi "
+          + "is unavailable; Medium and Low are Bluetooth tiers by the SDK's design. Fewer frames "
+          + "per second give each frame more of the link. HEVC is what lets 720p "
+          + "fit; Raw is the older path. Changes apply to the live picture. To "
+          + "force Bluetooth at any tier for a test, turn Wi-Fi off in iOS Settings.")) {
+          Picker("Quality", selection: $streamQualityRaw) {
+            ForEach(GlassesStreamQuality.allCases) { quality in
+              Text(quality.label).tag(quality.rawValue)
+            }
+          }
+          Picker("Frame rate", selection: $streamFrameRateRaw) {
+            ForEach(GlassesStreamFrameRate.allCases) { rate in
+              Text(rate.label).tag(rate.rawValue)
+            }
+          }
+          Picker("Codec", selection: $streamCodecRaw) {
+            ForEach(GlassesStreamCodec.allCases) { codec in
+              Text(codec.label).tag(codec.rawValue)
+            }
+          }
+          HStack {
+            Text("Now")
+            Spacer()
+            Text(GlassesStreamQuality.linkStatus(
+              requested: GlassesStreamQuality(rawValue: streamQualityRaw) ?? .high,
+              delivered: streamStatus.delivered, heldFor: streamStatus.heldFor))
+              .foregroundStyle(.secondary)
+              .multilineTextAlignment(.trailing)
+          }
         }
 
         // Intercepts. Off leaves the watcher exactly as it was -- trigger, banner,
