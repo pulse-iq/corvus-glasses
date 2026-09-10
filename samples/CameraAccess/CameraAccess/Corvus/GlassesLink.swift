@@ -223,7 +223,7 @@ final class GlassesLinkMonitor: ObservableObject {
         return ("Glasses connecting", "Your phone sees the glasses and is linking to them.")
       default:
         return ("Glasses not connected to your phone",
-                "Open the hinges and put them on. They chime when the link is up, then the camera starts on its own.")
+                "This is the Bluetooth link between the glasses and the phone, not the app. Open the hinges and bring them close. They chime when the link is up, then the camera starts on its own.")
       }
     }
     if sessionState == .paused {

@@ -56,6 +56,15 @@ struct StreamSessionView: View {
   }
 
   private var glassesPlaceholder: (title: String, caption: String) {
+    // With no glasses on the link, the only true statement is that the phone
+    // cannot see them. A typed issue from before the link dropped, or one
+    // raised by an attempt made while they were away, would read as an app
+    // problem. Permission and SDK availability are the exceptions: those are
+    // real regardless of the link and need the user to go elsewhere.
+    if link.activeDevice == nil, let linkWait = link.placeholder,
+       viewModel.glassesIssue != .permissionNeeded, viewModel.glassesIssue != .sdkUnavailable {
+      return linkWait
+    }
     switch viewModel.glassesIssue {
     case .sdkUnavailable:
       return ("Glasses unavailable", "The glasses SDK is not available on this device.")
@@ -92,26 +101,38 @@ struct StreamSessionView: View {
         HStack {
           Text(StudyStore.shared.active.name).font(.headline)
           Spacer()
-          Button { showSettings = true } label: { Image(systemName: "gearshape.fill") }.disabled(mission.isActive)
+          // A bare glyph gave this a ~20 pt target over a video view that owns
+          // pinch, long-press and swipe recognizers, so most taps were read as
+          // the start of a gesture. 44 pt is the platform minimum.
+          Button { showSettings = true } label: {
+            Image(systemName: "gearshape.fill")
+              .font(.title3)
+              .frame(width: 44, height: 44)
+              .background(.black.opacity(0.45), in: Circle())
+              .contentShape(Circle())
+          }
+          .buttonStyle(.plain)
+          .disabled(mission.isActive)
         }
         .padding()
         Spacer()
         if let error = mission.errorMessage { Text(error).font(.footnote).multilineTextAlignment(.center) }
-        Text(missionStatus).font(.headline)
+        if let status = missionStatus { Text(status).font(.headline) }
         if let status = mission.recordingStatus { Label("Recording: \(status)", systemImage: "record.circle").font(.subheadline) }
         if mission.isActive {
           Button("End Mission") { Task { await mission.end() } }
             .buttonStyle(.borderedProminent).tint(.red).disabled(mission.lifecycle.phase == .ending)
-        } else {
-          Text(captureSource == .glasses ? "Glasses camera" : "iPhone camera").font(.subheadline)
+        } else if captureSource == .glasses, let wearablesViewModel, wearablesViewModel.registrationState != .registered {
+          HomeScreenView(viewModel: wearablesViewModel).frame(maxHeight: 240)
+        } else if missionReady {
+          // Offered only once the picture is live. Until then the placeholder
+          // names what is being waited on, and a Start button beside it would
+          // only invite a start that the coordinator's readiness check rejects.
           Button("Start Mission") {
             mission.start(study: StudyStore.shared.active, source: captureSource,
               engine: IntelligenceEngine(rawValue: intelligenceRaw) ?? .gemini,
               startDAT: { await viewModel.handleStartStreaming() })
           }.buttonStyle(.borderedProminent)
-          if captureSource == .glasses, let wearablesViewModel, wearablesViewModel.registrationState != .registered {
-            HomeScreenView(viewModel: wearablesViewModel).frame(maxHeight: 240)
-          }
         }
       }.padding(24).foregroundStyle(.white)
     }
@@ -180,9 +201,19 @@ struct StreamSessionView: View {
     }
   }
 
-  private var missionStatus: String {
+  /// Frames are flowing from the chosen camera into the preview. That is
+  /// everything a mission needs from this screen; the room and the agent are
+  /// joined by Start Mission itself and checked by the coordinator.
+  private var missionReady: Bool {
+    if captureSource == .glasses {
+      return viewModel.isStreaming && liveKit.hasGlassesFrame && !liveKit.glassesFrameStale
+    }
+    return liveKit.previewTrack != nil
+  }
+
+  private var missionStatus: String? {
     switch mission.lifecycle.phase {
-    case .idle: return "Ready to start"
+    case .idle: return missionReady ? "Ready to start" : nil
     case .starting: return "Starting mission…"
     case .welcome: return "Welcome"
     case .shopping: return "Mission active"
