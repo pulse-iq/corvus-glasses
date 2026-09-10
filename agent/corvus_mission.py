@@ -6,17 +6,40 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 logger = logging.getLogger("corvus-mission")
 COMMAND_TOPIC = "corvus.mission.command"
+
+
+def mission_prefix(started_ms):
+    """Object-key prefix for one mission: the moment its worker took it up.
+
+    Folders sort by time and read as dates in a bucket browser. A mission is
+    identified by when it happened rather than by UUID; the IDs remain inside
+    manifest.json for anything that needs them.
+    """
+    stamp = datetime.fromtimestamp(started_ms / 1000, timezone.utc)
+    return "hack/missions/" + stamp.strftime("%Y-%m-%dT%H-%M-%SZ")
+
 EVENT_TOPIC = "corvus.mission.event"
 WELCOME = "Okay, your mission has started. Go about your shopping trip, and I may ask you a few questions along the way."
 
 
 class MissionSession:
     def __init__(
-        self, metadata, phone, voice, recording, store, room, send, *, now=None
+        self,
+        metadata,
+        phone,
+        voice,
+        recording,
+        store,
+        room,
+        send,
+        *,
+        now=None,
+        prefix=None,
     ):
         self.meta = metadata
         self.phone = phone
@@ -43,9 +66,7 @@ class MissionSession:
         self.interview_task = None
         self.start_task = None
         self.prepared_at = self.now()
-        self.prefix = (
-            f"hack/missions/{metadata['missionId']}/segments/{metadata['segmentId']}"
-        )
+        self.prefix = prefix or mission_prefix(self.now())
 
     def snapshot(self):
         return dict(
@@ -298,9 +319,8 @@ class MissionSession:
             recordingStartedAtMs=self.recording.started_at,
             recordingStatus=self.recording.status,
         )
-        key = self.prefix + f"/interviews/{iid}.json"
-        record["resultKey"] = key
-        await self.store.put(key, record)
+        # The manifest is the only JSON the mission writes; each interview is
+        # carried inline in its `interviews` list rather than as its own object.
         self.results[iid] = record
         self.active = None
         await self.persist()
@@ -454,14 +474,18 @@ async def run_mission(ctx, participant, metadata, engine, model_factory):
             destination_identities=[participant.identity],
         )
 
+    # One prefix for the recording and the manifest, fixed at the moment the
+    # worker takes up the mission, so the two cannot land in different folders.
+    prefix = mission_prefix(int(time.time() * 1000))
     mission = MissionSession(
         metadata,
         participant.identity,
         MissionVoice(ctx.room, participant.identity, model_factory),
-        MissionRecording(ctx.room.name, metadata["missionId"], metadata["segmentId"]),
+        MissionRecording(ctx.room.name, prefix),
         MissionStore(),
         Room(),
         send,
+        prefix=prefix,
     )
     mission.recording.on_started = mission.persist
     tasks = set()

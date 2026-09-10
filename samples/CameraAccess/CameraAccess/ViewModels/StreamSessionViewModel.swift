@@ -43,7 +43,7 @@ class StreamSessionViewModel: ObservableObject {
   @Published var errorMessage: String = ""
   @Published var hasActiveDevice: Bool = false
   @Published var streamingMode: StreamingMode = .glasses
-  @Published var selectedResolution: StreamingResolution = .high
+  @Published var selectedResolution: StreamingResolution = .medium
 
   var isStreaming: Bool {
     streamingStatus != .stopped
@@ -88,13 +88,21 @@ class StreamSessionViewModel: ObservableObject {
       // Let the SDK auto-select from available devices
       let selector = AutoDeviceSelector(wearables: wearables)
       self.deviceSelector = selector
-      // 720x1280 rather than 360x640. At the low tier, printed text is a few
-      // pixels tall before JPEG compression halves it again -- the model could
-      // read a receipt's header and total but nothing smaller. Must match
-      // `selectedResolution` below; the two are set independently.
+      // 504x896, the medium tier. The glasses reach the phone over Bluetooth
+      // Classic, and Meta's stream adapts to that link two ways: a ladder that
+      // steps resolution down a tier and then frame rate down to 15fps, and
+      // per-frame compression that tracks available bandwidth. Asking for the
+      // high tier (720x1280) sat at the top of that ladder, so the picture
+      // bounced between tiers and every frame was squeezed hardest -- choppy,
+      // with resolution visibly improving and degrading second to second.
+      // Meta's own guidance is that a lower requested tier yields a steadier,
+      // less compressed frame. Low (360x640) is too small: printed text is a
+      // few pixels tall before JPEG compression halves it again, and the model
+      // could read a receipt's header and total but nothing smaller. Must match
+      // `selectedResolution` above; the two are set independently.
       let config = StreamSessionConfig(
         videoCodec: VideoCodec.raw,
-        resolution: StreamingResolution.high,
+        resolution: StreamingResolution.medium,
         frameRate: 24)
       streamSession = StreamSession(streamSessionConfig: config, deviceSelector: selector)
 

@@ -357,7 +357,20 @@ final class LiveKitSession: NSObject, ObservableObject {
           glassesCapturerBox.capturer = track.capturer as? BufferCapturer
           try await track.start()
           guard generation == lifecycleGeneration, !Task.isCancelled else { try? await track.stop(); return }
-          _ = try await room.localParticipant.publish(videoTrack: track)
+          // Explicit encoding, because the SDK's default for a 720-tall track
+          // caps the encoder at 1.7 Mbps and publishes three simulcast layers.
+          // In mission mode nothing but the recorder ever subscribes to this
+          // track, so the two lower layers are wasted CPU and uplink, and the
+          // bitrate cap was the tightest hop in the pipeline after Bluetooth.
+          // Maintain resolution: when the uplink dips, drop frames rather than
+          // blur the labels the recording exists to capture. Keep in step with
+          // the egress bitrate in agent/corvus_mission_storage.py, which
+          // re-encodes this track and cannot add back what is lost here.
+          let publishOptions = VideoPublishOptions(
+            encoding: VideoEncoding(maxBitrate: 4_000_000, maxFps: 24),
+            simulcast: false,
+            degradationPreference: .maintainResolution)
+          _ = try await room.localParticipant.publish(videoTrack: track, options: publishOptions)
           localVideoTrack = track
         } else {
           // A video-call SDK defaults to the selfie camera; this app is a pair

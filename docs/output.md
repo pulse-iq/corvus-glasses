@@ -16,24 +16,34 @@ Documents/corvus/
 
 One session directory per app launch. The directory name — `session-<timestamp>`
 — is also the prefix used by legacy standalone realtime recordings. Mission
-recordings use mission and segment UUIDs instead; their manifest retains the
-phone session name.
+recordings are filed by the time the worker took up the mission instead; their
+manifest retains the phone session name and the mission and segment IDs.
 
 ## Full-mission recordings
 
 ```text
-hack/missions/<missionId>/
-└── segments/<segmentId>/
-    ├── recording.mp4
-    ├── manifest.json
-    └── interviews/<interceptId>.json
+hack/missions/<mission-start>/
+├── recording.mp4
+└── manifest.json
 ```
+
+`<mission-start>` is UTC to the second, `2026-09-10T05-38-19Z`, so folders sort
+by time and read as dates in a bucket browser. Two objects per mission and
+nothing else: LiveKit's own egress manifest is switched off, and interviews are
+not written as separate objects.
 
 One recording spans the welcome, ambient shopping audio/video, and all interviews
 in an uninterrupted mission. The manifest contains recording status, egress ID,
-recording start time, mission start/end information, and interview
-references. A recorder reported as finalizing is not yet a saved file; the
-companion mission-status endpoint reconciles its eventual result.
+recording start time, mission start/end information, and every interview
+transcript inline in its `interviews` list. It is rewritten at each state change,
+always to the same key, so the last write is the whole story. A recorder
+reported as finalizing is not yet a saved file; the companion mission-status
+endpoint reconciles its eventual result.
+
+Nothing in the system reads these objects back. The web service never touches
+the bucket and the phone keeps only the recording key as a string, so the
+layout can change without touching either; it exists for people and offline
+analysis.
 
 Local `InterceptRecord` adds optional `missionID`, `segmentID`,
 `recordingOffsetSeconds`, and `authoritativeTurns`. Existing records remain

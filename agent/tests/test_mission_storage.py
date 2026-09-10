@@ -26,27 +26,40 @@ class API:
 
 class RecordingTests(unittest.IsolatedAsyncioTestCase):
     async def test_saved_requires_complete_with_file(self):
-        for status, files, expected in [
-            (EgressStatus.EGRESS_COMPLETE, [object()], "saved"),
-            (EgressStatus.EGRESS_FAILED, [], "failed"),
-            (EgressStatus.EGRESS_COMPLETE, [], "failed"),
+        none = SimpleNamespace(filename="")
+        legacy = SimpleNamespace(filename="recording.mp4")
+        for status, files, file, expected in [
+            (EgressStatus.EGRESS_COMPLETE, [object()], none, "saved"),
+            # What LiveKit actually returns for a one-file room composite:
+            # the deprecated single result filled, the list empty.
+            (EgressStatus.EGRESS_COMPLETE, [], legacy, "saved"),
+            (EgressStatus.EGRESS_FAILED, [], legacy, "failed"),
+            (EgressStatus.EGRESS_COMPLETE, [], none, "failed"),
         ]:
-            r = MissionRecording("room", "mission", "segment")
+            r = MissionRecording("room", "hack/missions/t")
             r.egress_id = "e"
 
             async def info():
-                return SimpleNamespace(status=status, file_results=files)
+                return SimpleNamespace(status=status, file_results=files, file=file)
 
             r.info = info
             with patch(
                 "corvus_mission_storage.LiveKitAPI",
-                lambda: API(SimpleNamespace(status=status, file_results=files)),
+                lambda: API(
+                    SimpleNamespace(status=status, file_results=files, file=file)
+                ),
             ):
                 await r.stop()
             self.assertEqual(r.status, expected)
 
+    def test_recording_lives_beside_the_manifest(self):
+        r = MissionRecording("room", "hack/missions/2026-09-10T05-38-19Z")
+        self.assertEqual(
+            r.key, "hack/missions/2026-09-10T05-38-19Z/recording.mp4"
+        )
+
     async def test_egress_identity_persisted_before_active_poll(self):
-        r = MissionRecording("room", "mission", "segment")
+        r = MissionRecording("room", "hack/missions/t")
         observed = []
 
         async def persist():
@@ -77,23 +90,6 @@ class RecordingTests(unittest.IsolatedAsyncioTestCase):
             await r.start()
         self.assertEqual(r.status, "recording")
         self.assertEqual(r.started_at, 1000)
-
-    async def test_interview_write_is_immutable(self):
-        from corvus_mission_storage import MissionStore
-
-        calls = []
-
-        class S3:
-            def put_object(self, **kwargs):
-                calls.append(kwargs)
-
-        with (
-            patch.dict("os.environ", {"RECORDINGS_S3_BUCKET": "test"}),
-            patch("corvus_mission_storage.boto3.client", return_value=S3()),
-        ):
-            store = MissionStore()
-            await store.put("root/interviews/id.json", {"turns": []})
-        self.assertEqual(calls[0].get("IfNoneMatch"), "*")
 
     async def test_cancelled_manifest_write_finishes_before_terminal_write(self):
         import asyncio
@@ -130,27 +126,3 @@ class RecordingTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(first, last, return_exceptions=True)
         self.assertEqual(calls[-1], b'{"phase": "ended"}')
 
-    async def test_conflicting_immutable_result_is_rejected(self):
-        import io
-
-        from botocore.exceptions import ClientError
-        from corvus_mission_storage import MissionStore
-
-        class S3:
-            def put_object(self, **kwargs):
-                raise ClientError(
-                    {"ResponseMetadata": {"HTTPStatusCode": 412}}, "PutObject"
-                )
-
-            def get_object(self, **kwargs):
-                return {"Body": io.BytesIO(b'{"turns":["original"]}')}
-
-        with (
-            patch.dict("os.environ", {"RECORDINGS_S3_BUCKET": "test"}),
-            patch("corvus_mission_storage.boto3.client", return_value=S3()),
-        ):
-            store = MissionStore()
-            with self.assertRaisesRegex(
-                RuntimeError, "Immutable interview result conflict"
-            ):
-                await store.put("root/interviews/id.json", {"turns": ["replacement"]})

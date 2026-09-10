@@ -43,6 +43,13 @@ describe('mission production boundary', () => {
     );
     expect(reconcileRecording({ status: 3, fileResults: [] })).toBe('failed');
     expect(
+      reconcileRecording({
+        status: 3,
+        fileResults: [],
+        result: { case: 'file' }
+      })
+    ).toBe('saved');
+    expect(
       reconcileRecording({ status: 3, fileResults: [{ filename: 'key' }] })
     ).toBe('saved');
     expect(reconcileRecording({ status: 5, fileResults: [] })).toBe('failed');

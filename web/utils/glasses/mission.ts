@@ -123,8 +123,13 @@ export async function claimMission(
 export function reconcileRecording(info: {
   status: number;
   fileResults?: unknown[];
+  result?: { case?: string };
 }) {
-  if (info.status === 3) return info.fileResults?.length ? 'saved' : 'failed';
+  // LiveKit fills the deprecated single `file` result for a one-file room
+  // composite and leaves `fileResults` empty -- observed on a real mission
+  // whose recording was in the bucket while this read 'failed'. Either counts.
+  const wroteFile = !!info.fileResults?.length || info.result?.case === 'file';
+  if (info.status === 3) return wroteFile ? 'saved' : 'failed';
   if (info.status >= 4) return 'failed';
   if (info.status === 2) return 'finalizing';
   return info.status === 1 ? 'recording' : 'starting';

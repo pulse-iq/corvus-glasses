@@ -6,7 +6,6 @@ import os
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
 from livekit.api import LiveKitAPI
 from livekit.protocol.egress import (
     EgressStatus,
@@ -36,25 +35,12 @@ class MissionStore:
         body = json.dumps(value).encode()
 
         def write():
-            try:
-                self.s3.put_object(
-                    Bucket=self.bucket,
-                    Key=key,
-                    Body=body,
-                    ContentType="application/json",
-                    **({"IfNoneMatch": "*"} if "/interviews/" in key else {}),
-                )
-            except ClientError as error:
-                if (
-                    error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-                    != 412
-                ):
-                    raise
-                existing = self.s3.get_object(Bucket=self.bucket, Key=key)[
-                    "Body"
-                ].read()
-                if json.loads(existing) != value:
-                    raise RuntimeError("Immutable interview result conflict") from error
+            self.s3.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+            )
 
         # Cancellation cannot abandon an in-flight S3 request and let its older
         # manifest overwrite a terminal write. Retain ownership until it finishes.
@@ -67,10 +53,23 @@ class MissionStore:
                 raise
 
 
+def egress_wrote_file(info):
+    """Whether a finished egress reports a file.
+
+    LiveKit fills the deprecated single `file` result for a one-file room
+    composite and leaves the newer `file_results` list empty -- observed on a
+    real mission whose 7.7 MB recording sat in the bucket while both this
+    worker and the web service called it failed. Accept either field.
+    """
+    if getattr(info, "file_results", None):
+        return True
+    return bool(getattr(getattr(info, "file", None), "filename", ""))
+
+
 class MissionRecording:
-    def __init__(self, room, mission, segment):
+    def __init__(self, room, prefix):
         self.room = room
-        self.key = f"hack/missions/{mission}/segments/{segment}/recording.mp4"
+        self.key = prefix + "/recording.mp4"
         self.egress_id = None
         self.started_at = None
         self.status = "starting"
@@ -95,6 +94,10 @@ class MissionRecording:
                         EncodedFileOutput(
                             file_type=EncodedFileType.MP4,
                             filepath=self.key,
+                            # The bucket holds two objects per mission: this
+                            # file and the worker's manifest. LiveKit's own
+                            # egress manifest would be a third.
+                            disable_manifest=True,
                             s3=S3Upload(
                                 bucket=os.environ["RECORDINGS_S3_BUCKET"],
                                 region=os.getenv("RECORDINGS_S3_REGION", "us-east-1"),
@@ -103,11 +106,15 @@ class MissionRecording:
                             ),
                         )
                     ],
+                    # Bitrate in kbps. The phone publishes the glasses track at up to
+                    # 4 Mbps (LiveKitSession.swift); this hop re-encodes it, so it
+                    # must not be the narrower of the two or it discards detail the
+                    # phone paid to send. Keep this at or above the phone's cap.
                     advanced=EncodingOptions(
                         width=720,
                         height=1280,
                         framerate=24,
-                        video_bitrate=2000,
+                        video_bitrate=4000,
                         audio_bitrate=128,
                     ),
                 )
@@ -152,6 +159,6 @@ class MissionRecording:
                 info = await self.info()
         self.status = (
             "saved"
-            if info.status == EgressStatus.EGRESS_COMPLETE and info.file_results
+            if info.status == EgressStatus.EGRESS_COMPLETE and egress_wrote_file(info)
             else "failed"
         )

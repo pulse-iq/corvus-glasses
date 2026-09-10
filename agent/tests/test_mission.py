@@ -3,7 +3,7 @@ import copy
 import unittest
 from uuid import uuid4
 
-from corvus_mission import MissionSession
+from corvus_mission import MissionSession, mission_prefix
 
 
 class Voice:
@@ -349,11 +349,13 @@ class MissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.voice.interrupt = fail
         await self.m.end("user_ended")
+        manifest = self.store.values[self.m.prefix + "/manifest.json"]
+        interview = next(
+            i for i in manifest["interviews"] if i["interceptId"] == c["interceptId"]
+        )
+        self.assertEqual(interview["turns"], self.voice.turns)
         self.assertEqual(
-            self.store.values[
-                self.m.prefix + "/interviews/" + c["interceptId"] + ".json"
-            ]["turns"],
-            self.voice.turns,
+            [k for k in self.store.values if "/interviews/" in k], []
         )
 
     async def test_recording_finalization_does_not_change_mission_end_time(self):
@@ -371,3 +373,24 @@ class MissionTests(unittest.IsolatedAsyncioTestCase):
         )
         terminal = next(e for e in self.events if e["type"] == "mission_ended")
         self.assertEqual(terminal["payload"]["endedAtMs"], ended)
+
+
+class PrefixTests(unittest.TestCase):
+    def test_prefix_is_the_mission_start_time(self):
+        # 2026-09-10 05:38:19 UTC
+        self.assertEqual(
+            mission_prefix(1789018699128), "hack/missions/2026-09-10T05-38-19Z"
+        )
+
+    def test_session_defaults_prefix_from_its_clock(self):
+        m = MissionSession(
+            {"missionId": str(uuid4()), "segmentId": str(uuid4())},
+            "phone",
+            None,
+            type("R", (), {"key": "", "status": "", "egress_id": None, "started_at": None})(),
+            None,
+            None,
+            None,
+            now=lambda: 1789018699128,
+        )
+        self.assertEqual(m.prefix, "hack/missions/2026-09-10T05-38-19Z")
