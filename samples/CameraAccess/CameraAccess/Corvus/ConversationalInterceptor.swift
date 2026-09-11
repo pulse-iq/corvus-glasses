@@ -3,9 +3,8 @@ import Foundation
 
 /// An intercept with a model in the loop.
 ///
-/// Same half-duplex mechanics as `ScriptedInterceptor` -- speak, listen, speak --
-/// but every question after the opener is chosen by a model that has heard the
-/// answers. The opener stays fixed on purpose: it is the study's own wording,
+/// Half duplex -- speak, listen, speak -- with every question after the opener
+/// chosen by a model that has heard the answers. The opener stays fixed on purpose: it is the study's own wording,
 /// asked identically to every participant, which is what makes their answers
 /// comparable. Improvising the opening question would trade the one piece of
 /// experimental control this design has for nothing.

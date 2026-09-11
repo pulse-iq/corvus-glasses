@@ -114,17 +114,14 @@ in 6s — a detector at 4.8s p50 cannot satisfy it.
 
 ## The intercept
 
-`Interceptor` is one protocol with three implementations, chosen at runtime in
-Settings → Corvus → Intercepts → Style.
+`Interceptor` is one protocol with two selectable implementations, chosen at
+runtime in Settings → Corvus → Intercepts → Style, plus the mission coordinator,
+which takes over as the interceptor for the length of a mission.
 
 | Mode | Model in the loop | Server needed | Turnaround |
 |---|---|---|---|
-| `scripted` | none — fixed questions from the study file | none | n/a |
 | `conversational` | one call per turn | none | ~4.0s |
 | `liveKit` (default) | a realtime voice model | token endpoint + deployed agent | sub-second |
-
-**Scripted** is the deterministic control. Identical wording for every
-participant is sometimes exactly what a study wants.
 
 **Conversational** sends the *answer audio* straight to the model and gets back
 `{transcript, next_question, is_reask, rationale}` in one round trip — no

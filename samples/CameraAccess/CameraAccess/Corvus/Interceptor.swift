@@ -86,10 +86,10 @@ struct InterceptRecord: Codable, Identifiable, Equatable {
 
 /// Takes a trigger and conducts the intercept.
 ///
-/// The whole point of the seam: `ScriptedInterceptor` speaks and records
-/// locally today, and a `LiveKitInterceptor` running a realtime conversation
-/// can replace it later without the watcher, the study config, or the log format
-/// noticing. Same shape as `ProductDetector`, for the same reason.
+/// The whole point of the seam: `ConversationalInterceptor` speaks and records
+/// locally, `LiveKitInterceptor` and the mission run a realtime conversation
+/// through a room, and the watcher, the study config and the log format cannot
+/// tell them apart. Same shape as `ProductDetector`, for the same reason.
 @MainActor
 protocol Interceptor: AnyObject {
   var name: String { get }
@@ -108,10 +108,6 @@ protocol Interceptor: AnyObject {
 }
 
 enum InterceptorKind: String, CaseIterable, Identifiable {
-  /// Every question written in advance, in the study file. No model in the
-  /// loop. Kept as the deterministic control: identical wording for every
-  /// participant is sometimes exactly what a study wants.
-  case scripted
   /// Study's opening question, then a model listens and chooses the follow-ups.
   case conversational
   /// Realtime, through the LiveKit room and the worker in `agent/`. Needs a
@@ -124,7 +120,6 @@ enum InterceptorKind: String, CaseIterable, Identifiable {
 
   var label: String {
     switch self {
-    case .scripted: return "Scripted (fixed questions)"
     case .conversational: return "Conversational (model picks follow-ups)"
     case .liveKit: return "Realtime (LiveKit + Gemini Live)"
     }
@@ -133,7 +128,6 @@ enum InterceptorKind: String, CaseIterable, Identifiable {
   @MainActor
   func make(media: (any RealtimeMedia)? = nil) -> Interceptor? {
     switch self {
-    case .scripted: return ScriptedInterceptor()
     case .conversational: return ConversationalInterceptor()
     case .liveKit: return LiveKitInterceptor(session: media)
     }
