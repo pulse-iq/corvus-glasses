@@ -355,6 +355,7 @@ extension Study {
     let name: String
     let questions: QuestionSet
     let followUps: [String]
+    var probeDepth: Int? = nil
 
     switch target {
     case .item(let id):
@@ -362,6 +363,7 @@ extension Study {
       name = item.displayName
       questions = item.questions
       followUps = item.followUps
+      probeDepth = item.probeDepth
     case .category(let id):
       guard let category = Watchlist.category(withID: id, in: categories) else { return nil }
       name = category.displayName
@@ -374,7 +376,8 @@ extension Study {
       displayName: name,
       situation: Self.situation(kind: kind, target: target, name: name, evidence: evidence),
       question: questions.question(for: kind),
-      followUps: followUps)
+      followUps: followUps,
+      probeDepth: probeDepth)
   }
 
   /// A whole sentence, so the intercept prompts can drop it in without

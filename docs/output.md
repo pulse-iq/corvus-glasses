@@ -10,7 +10,6 @@ Documents/corvus/
     ├── events.jsonl          append-only trace of the whole run
     ├── intercepts/<uuid>.json    the deliverable
     ├── missions/<uuid>/manifest.json    mission state and received events
-    ├── audio/                answer recordings (turn-based interceptors only)
     └── frames/               sampled frames (off by default)
 ```
 
@@ -103,7 +102,7 @@ The deliverable. One `InterceptRecord` per intercept:
 | `triggeredAt`, `endedAt`, `confidence` | when and how sure |
 | `turns[]` | each question, its transcript, timings, and audio path |
 | `questionsAsked`, `reasks` | substantive questions, re-asks excluded |
-| `interceptor`, `brain` | which mode ran it, and whose transcript this is |
+| `interceptor`, `conversation` | which interceptor ran it, and which conversation mode |
 | `endedBecause` | how a normal intercept finished |
 | `abortReason` | set only when something went wrong |
 | `routeMode`, `routeInput`, `routeOutput`, `routeMatchedGlasses` | what the audio route actually resolved to |
@@ -127,11 +126,8 @@ publishing, the record has zero turns and an `abortReason`.
 
 ## Audio
 
-`audio/` holds one recording per answer, referenced by `turns[].audioPath`
-relative to the session directory so a pulled folder stays portable.
-
-Only the turn-based interceptors write here. The realtime path never records
-answer audio to the phone — its audio is in the room recording instead.
+Nothing records answer audio on the phone. In either conversation mode the
+audio is in the room recording.
 
 ## Frames
 
@@ -157,10 +153,7 @@ pointer rather than a path: the bucket is not addressable from the device.
 Within a session, sorting by name sorts by time.
 
 Nothing else records video. The watcher's frames are 768px stills at ~1fps and
-mostly discarded, and the conversational interceptor never opens a room.
-Switching the style to `conversational` therefore records no video at all, and
-the first symptom of expecting otherwise is an empty bucket rather than an
-error.
+mostly discarded.
 
 **The pickup itself is not in any recording.** The moment that triggered the
 intercept happened seconds before the room existed. Capturing it would mean

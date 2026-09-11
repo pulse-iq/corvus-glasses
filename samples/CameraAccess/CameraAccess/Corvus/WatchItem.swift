@@ -119,10 +119,14 @@ struct WatchItem: Identifiable, Codable, Equatable, Hashable {
   /// The opening intercept question. The interceptor seeds the voice session
   /// with it; the watcher carries it so the trigger is whole.
   let questions: QuestionSet
-  /// Asked in order after the opening question, each with its own recording.
+  /// Probe questions for after the opener. A guide to the territory, not a
+  /// script: the turn-based mode covers their intent in the wearer's own words.
   /// Empty is the normal case -- an intercept earns a few seconds of someone's
   /// attention, not an interview.
   let followUps: [String]
+  /// Hard cap on follow-ups after the opener, for this item. Omitted means the
+  /// app-wide intercept budget minus the opener.
+  let probeDepth: Int?
   /// Which shelf section this belongs to, if the study defines one. What lets
   /// a dwell on `bread` and a pickup of `sourdough` agree about what happened.
   let categoryID: String?
@@ -131,18 +135,18 @@ struct WatchItem: Identifiable, Codable, Equatable, Hashable {
 
   init(
     id: String, displayName: String, aliases: [String] = [], question: String,
-    followUps: [String] = [], categoryID: String? = nil,
+    followUps: [String] = [], probeDepth: Int? = nil, categoryID: String? = nil,
     primitives: [PrimitiveKind] = []
   ) {
     self.init(
       id: id, displayName: displayName, aliases: aliases,
-      questions: QuestionSet(question), followUps: followUps, categoryID: categoryID,
-      primitives: primitives)
+      questions: QuestionSet(question), followUps: followUps, probeDepth: probeDepth,
+      categoryID: categoryID, primitives: primitives)
   }
 
   init(
     id: String, displayName: String, aliases: [String] = [], questions: QuestionSet,
-    followUps: [String] = [], categoryID: String? = nil,
+    followUps: [String] = [], probeDepth: Int? = nil, categoryID: String? = nil,
     primitives: [PrimitiveKind] = []
   ) {
     self.id = id
@@ -150,6 +154,7 @@ struct WatchItem: Identifiable, Codable, Equatable, Hashable {
     self.aliases = aliases
     self.questions = questions
     self.followUps = followUps
+    self.probeDepth = probeDepth
     self.categoryID = categoryID
     self.primitives = primitives
   }
@@ -157,7 +162,7 @@ struct WatchItem: Identifiable, Codable, Equatable, Hashable {
   // Hand-written so that adding a field never invalidates a study file already
   // sitting on someone's phone -- the same reason TriggerPolicy decodes this way.
   enum CodingKeys: String, CodingKey {
-    case id, displayName, aliases, question, followUps, categoryID, primitives
+    case id, displayName, aliases, question, followUps, probeDepth, categoryID, primitives
   }
 
   init(from decoder: Decoder) throws {
@@ -167,6 +172,7 @@ struct WatchItem: Identifiable, Codable, Equatable, Hashable {
     aliases = try c.decodeIfPresent([String].self, forKey: .aliases) ?? []
     questions = try c.decode(QuestionSet.self, forKey: .question)
     followUps = try c.decodeIfPresent([String].self, forKey: .followUps) ?? []
+    probeDepth = try c.decodeIfPresent(Int.self, forKey: .probeDepth)
     categoryID = try c.decodeIfPresent(String.self, forKey: .categoryID)
     primitives = try PrimitiveSet.parse(
       c.decodeIfPresent([String].self, forKey: .primitives) ?? [], isItem: true)
@@ -179,6 +185,7 @@ struct WatchItem: Identifiable, Codable, Equatable, Hashable {
     if !aliases.isEmpty { try c.encode(aliases, forKey: .aliases) }
     try c.encode(questions, forKey: .question)
     if !followUps.isEmpty { try c.encode(followUps, forKey: .followUps) }
+    try c.encodeIfPresent(probeDepth, forKey: .probeDepth)
     try c.encodeIfPresent(categoryID, forKey: .categoryID)
     if !primitives.isEmpty { try c.encode(primitives.map(\.rawValue), forKey: .primitives) }
   }
@@ -297,6 +304,8 @@ struct InterceptSubject: Equatable, Codable {
   let situation: String
   let question: String
   let followUps: [String]
+  /// The item's own cap on follow-ups, when it sets one.
+  var probeDepth: Int? = nil
 }
 
 /// Watchlist lookup. The lists themselves live in a `Study`, loaded from JSON

@@ -43,10 +43,6 @@ struct StreamSessionView: View {
   @State private var showSettings = false
   @AppStorage("corvus.showWatcherHUD") private var showHUD = true
   @AppStorage("corvus.watchOnCameraScreen") private var watchHere = true
-  /// Observed here rather than only read at launch: Settings writes this key,
-  /// and the coordinator builds its interceptor once in init, so without a
-  /// watcher on it the picker silently did nothing until the next relaunch.
-  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.liveKit.rawValue
   @AppStorage(GlassesStreamQuality.defaultsKey) private var streamQualityRaw = GlassesStreamQuality.high.rawValue
   @AppStorage(GlassesStreamFrameRate.defaultsKey) private var streamFrameRateRaw = GlassesStreamFrameRate.fps15.rawValue
   @AppStorage(GlassesStreamCodec.defaultsKey) private var streamCodecRaw = GlassesStreamCodec.hevc.rawValue
@@ -358,11 +354,6 @@ struct StreamSessionView: View {
     }
     .onChange(of: streamCodecRaw) { raw in
       if let codec = GlassesStreamCodec(rawValue: raw) { viewModel.updateCodec(codec) }
-    }
-    .onChange(of: interceptorRaw) { raw in
-      // Rebuilds the interceptor in place, so the choice applies to the next
-      // trigger rather than the next launch.
-      if let kind = InterceptorKind(rawValue: raw) { watcher.use(kind) }
     }
     .onChange(of: intelligenceRaw) { _ in
       // The brain is chosen at session start (room-token metadata), so a live

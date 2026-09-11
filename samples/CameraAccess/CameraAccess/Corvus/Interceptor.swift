@@ -86,10 +86,10 @@ struct InterceptRecord: Codable, Identifiable, Equatable {
 
 /// Takes a trigger and conducts the intercept.
 ///
-/// The whole point of the seam: `ConversationalInterceptor` speaks and records
-/// locally, `LiveKitInterceptor` and the mission run a realtime conversation
-/// through a room, and the watcher, the study config and the log format cannot
-/// tell them apart. Same shape as `ProductDetector`, for the same reason.
+/// The whole point of the seam: the mission coordinator and the standalone
+/// `LiveKitInterceptor` both conduct the conversation through a room and the
+/// worker, and the watcher, the study config and the log format cannot tell
+/// them apart. Same shape as `ProductDetector`, for the same reason.
 @MainActor
 protocol Interceptor: AnyObject {
   var name: String { get }
@@ -105,31 +105,4 @@ protocol Interceptor: AnyObject {
 
   /// Stop early -- the wearer took the glasses off, the study was switched.
   func cancel()
-}
-
-enum InterceptorKind: String, CaseIterable, Identifiable {
-  /// Study's opening question, then a model listens and chooses the follow-ups.
-  case conversational
-  /// Realtime, through the LiveKit room and the worker in `agent/`. Needs a
-  /// live session object and a gateway that can mint room tokens, so unlike the
-  /// others it can be selected while unable to run -- which it reports rather
-  /// than failing silently.
-  case liveKit
-
-  var id: String { rawValue }
-
-  var label: String {
-    switch self {
-    case .conversational: return "Conversational (model picks follow-ups)"
-    case .liveKit: return "Realtime (LiveKit + Gemini Live)"
-    }
-  }
-
-  @MainActor
-  func make(media: (any RealtimeMedia)? = nil) -> Interceptor? {
-    switch self {
-    case .conversational: return ConversationalInterceptor()
-    case .liveKit: return LiveKitInterceptor(session: media)
-    }
-  }
 }

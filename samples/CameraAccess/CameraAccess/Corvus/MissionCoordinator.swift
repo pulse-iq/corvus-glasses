@@ -56,7 +56,8 @@ final class MissionCoordinator: ObservableObject, Interceptor {
     watcher.use(study); watcher.interceptor = self; watcher.setMissionReady(false); watcher.start()
     session.callContext = RealtimeCallContext(
       metadata: ["mode": "mission", "version": "1", "missionId": missionID,
-        "segmentId": segmentID, "studyId": study.id, "sessionId": CorvusLog.shared.sessionName],
+        "segmentId": segmentID, "studyId": study.id, "sessionId": CorvusLog.shared.sessionName,
+        "conversation": ConversationMode.stored.rawValue],
       source: source, engine: engine)
     do { try persist() } catch {
       errorMessage = error.localizedDescription
@@ -202,6 +203,7 @@ final class MissionCoordinator: ObservableObject, Interceptor {
     defer { if generation == lifecycle.generation, activeIntercept == id { activeIntercept = nil } }
     var brief = MissionPayload(); brief.studyId = study.id; brief.itemId = record.itemID; brief.itemName = record.itemName
     brief.openingQuestion = trigger.subject.question; brief.instructions = InterceptPrompt.realtime(study: study, subject: trigger.subject)
+    brief.topic = InterceptPrompt.topic(study: study, subject: trigger.subject)
     brief.triggeredAtMs = trigger.firedAt.timeIntervalSince1970 * 1000; brief.primitive = trigger.primitive.rawValue; brief.confidence = trigger.confidence
     do {
       let reply = try await transport.request(command("begin_intercept", intercept: id, payload: brief))

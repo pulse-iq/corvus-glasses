@@ -50,6 +50,9 @@ from livekit.plugins import google, openai
 from openai.types.beta.realtime.session import TurnDetection
 
 from corvus_intercept import InterceptSession, brief_from_metadata
+# Imported for its side effect: the turn-based speech plugins must register
+# before the worker forks its inference process (the turn detector runs there).
+import corvus_conversation  # noqa: F401
 
 logger = logging.getLogger("visionclaw-agent")
 
@@ -1380,4 +1383,6 @@ async def mission_request(request):
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, request_fnc=mission_request, agent_name="corvus-glasses"))
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, request_fnc=mission_request, agent_name="corvus-glasses",
+                              # Silero loads once per job process, as in pulseiq-live-kit.
+                              prewarm_fnc=corvus_conversation.prewarm))

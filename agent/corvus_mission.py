@@ -315,6 +315,7 @@ class MissionSession:
             missionId=self.meta["missionId"],
             segmentId=self.meta["segmentId"],
             endedAtMs=self.ended_at if self.ended_at is not None else self.now(),
+            conversation=getattr(self.voice, "mode", None),
             recordingKey=self.recording.key,
             recordingStartedAtMs=self.recording.started_at,
             recordingStatus=self.recording.status,
@@ -457,6 +458,7 @@ async def run_mission(ctx, participant, metadata, engine, model_factory):
         raise ValueError("unsupported mission protocol version")
     if metadata.get("phoneIdentity", participant.identity) != participant.identity:
         raise ValueError("mission owner mismatch")
+    from corvus_conversation import VoiceProfile, mode_from_metadata
     from corvus_mission_storage import MissionRecording, MissionStore
     from corvus_mission_voice import MissionVoice
 
@@ -480,7 +482,15 @@ async def run_mission(ctx, participant, metadata, engine, model_factory):
     mission = MissionSession(
         metadata,
         participant.identity,
-        MissionVoice(ctx.room, participant.identity, model_factory),
+        MissionVoice(
+            ctx.room,
+            participant.identity,
+            VoiceProfile(
+                mode_from_metadata(metadata),
+                model_factory,
+                vad=getattr(getattr(ctx, "proc", None), "userdata", {}).get("vad"),
+            ),
+        ),
         MissionRecording(ctx.room.name, prefix),
         MissionStore(),
         Room(),

@@ -60,15 +60,11 @@ trigger-to-audio latency for the deployed configuration.
 
 ## Standalone realtime interceptor
 
-`liveKit` is the default interceptor. It trades the simplicity of the turn-based
-modes -- which need nothing but a model key -- for sub-second turnaround: the
-phone publishes its microphone into a room, a deployed worker bridges that room
-to a realtime voice model, and the conversation happens at conversational
-latency.
-
-It is the only interceptor that needs anything outside the phone, and the only
-one that produces video. Without a token endpoint and its token, switch the
-style to `conversational`, which needs no server at all.
+The standalone realtime interceptor: the phone publishes its microphone into a
+room, a deployed worker bridges that room to a realtime voice model, and the
+conversation happens at conversational latency. Missions use the same room and
+worker, and add a turn-based conversation mode on top; see
+[architecture.md](architecture.md).
 
 ```
 phone ──POST /livekit-token──> token endpoint
@@ -96,7 +92,7 @@ Both can be overridden on the device under Settings → Cloud gateway, and **the
 stored value wins over the compiled default**, so a phone that already has one
 keeps it until you change it there.
 
-Then switch Settings → Corvus → Intercepts → Style to Realtime. Settings shows a
+Settings shows a
 gateway status line that distinguishes a rejected token from an unreachable
 server — they need opposite fixes.
 

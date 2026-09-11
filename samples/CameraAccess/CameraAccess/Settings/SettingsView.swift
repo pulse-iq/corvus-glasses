@@ -54,9 +54,8 @@ struct SettingsView: View {
   @AppStorage("corvus.watchOnCameraScreen") private var watchOnCameraScreen = true
   @AppStorage("corvus.showWatcherHUD") private var showWatcherHUD = true
   @AppStorage("corvus.interceptsEnabled") private var interceptsEnabled = true
-  @AppStorage("corvus.transcribeAnswers") private var transcribeAnswers = true
   @AppStorage("corvus.audioRouteMode") private var audioRouteRaw = AudioRouteMode.glassesBothWays.rawValue
-  @AppStorage("corvus.interceptor") private var interceptorRaw = InterceptorKind.liveKit.rawValue
+  @AppStorage(ConversationMode.defaultsKey) private var conversationRaw = ConversationMode.realtime.rawValue
   @AppStorage(GlassesStreamQuality.defaultsKey) private var streamQualityRaw = GlassesStreamQuality.high.rawValue
   @AppStorage(GlassesStreamFrameRate.defaultsKey) private var streamFrameRateRaw = GlassesStreamFrameRate.fps15.rawValue
   @AppStorage(GlassesStreamCodec.defaultsKey) private var streamCodecRaw = GlassesStreamCodec.hevc.rawValue
@@ -126,28 +125,18 @@ struct SettingsView: View {
         // Intercepts. Off leaves the watcher exactly as it was -- trigger, banner,
         // log, silence -- which is the right setting while tuning detection.
         Section(header: Text("Intercepts"), footer: Text(
-          interceptorRaw == InterceptorKind.conversational.rawValue
-            ? "The study's opening question is always asked word for word. After "
-              + "that a model hears the answer and picks the follow-up, or stops. "
-              + "Expect about two seconds of silence between turns."
-            : audioRouteRaw == AudioRouteMode.glassesBothWays.rawValue
+          audioRouteRaw == AudioRouteMode.glassesBothWays.rawValue
             ? "Glasses speaker and glasses microphone. The route drops to call "
               + "quality, but the mic is on the wearer rather than in a pocket — "
               + "worth far more once there is background noise."
             : "Glasses speaker at full quality, answer recorded on the phone. "
               + "Cleaner audio, but the phone hears the room rather than the wearer.")) {
           Toggle("Ask the question out loud", isOn: $interceptsEnabled)
-          Picker("Style", selection: $interceptorRaw) {
-            ForEach(InterceptorKind.allCases) { kind in
-              Text(kind.label).tag(kind.rawValue)
-            }
-          }
           Picker("Audio route", selection: $audioRouteRaw) {
             ForEach(AudioRouteMode.allCases, id: \.rawValue) { mode in
               Text(mode.label).tag(mode.rawValue)
             }
           }
-          Toggle("Transcribe answers", isOn: $transcribeAnswers)
         }
 
         Section(header: Text("Camera"), footer: Text(captureSourceRaw == CaptureSource.glasses.rawValue
@@ -161,15 +150,25 @@ struct SettingsView: View {
           .pickerStyle(.segmented)
         }
 
-        Section(header: Text("Intelligence"), footer: Text(intelligenceRaw == IntelligenceEngine.openai.rawValue
-          ? "OpenAI gpt-realtime. Applies to the next call."
-          : "Google Gemini Live. Applies to the next call.")) {
-          Picker("Model", selection: $intelligenceRaw) {
-            ForEach(IntelligenceEngine.allCases, id: \.rawValue) { engine in
-              Text(engine.label).tag(engine.rawValue)
+        // How a mission talks. Sent to the worker with the room token, so it
+        // takes effect at the next mission rather than mid-conversation.
+        Section(header: Text("Mission voice"), footer: Text(
+          (ConversationMode(rawValue: conversationRaw) ?? .realtime)
+            .footer(engine: IntelligenceEngine(rawValue: intelligenceRaw) ?? .openai))) {
+          Picker("Conversation", selection: $conversationRaw) {
+            ForEach(ConversationMode.allCases) { mode in
+              Text(mode.label).tag(mode.rawValue)
             }
           }
           .pickerStyle(.segmented)
+          if conversationRaw == ConversationMode.realtime.rawValue {
+            Picker("Model", selection: $intelligenceRaw) {
+              ForEach(IntelligenceEngine.allCases, id: \.rawValue) { engine in
+                Text(engine.label).tag(engine.rawValue)
+              }
+            }
+            .pickerStyle(.segmented)
+          }
           Toggle("Show captions", isOn: $showCaptions)
         }
 

@@ -114,25 +114,34 @@ in 6s — a detector at 4.8s p50 cannot satisfy it.
 
 ## The intercept
 
-`Interceptor` is one protocol with two selectable implementations, chosen at
-runtime in Settings → Corvus → Intercepts → Style, plus the mission coordinator,
-which takes over as the interceptor for the length of a mission.
+`Interceptor` is one protocol with two implementations: the mission
+coordinator, which is the interceptor for the length of a mission, and
+`LiveKitInterceptor`, the standalone realtime intercept the legacy screen still
+runs. Both conduct the conversation through a LiveKit room and the worker in
+`agent/`; nothing intercepts on the phone alone.
 
-| Mode | Model in the loop | Server needed | Turnaround |
+A mission conducts its intercepts in one of two conversation modes, chosen in
+Settings → Mission voice and sent to the worker with the room token:
+
+| Mode | What listens and speaks | Turnaround | Interruptible |
 |---|---|---|---|
-| `conversational` | one call per turn | none | ~4.0s |
-| `liveKit` (default) | a realtime voice model | token endpoint + deployed agent | sub-second |
+| `realtime` (default) | one speech-to-speech model (Gemini Live or OpenAI realtime) | sub-second | yes |
+| `turnBased` | Deepgram recognition, Gemini Flash, ElevenLabs voice — pulseiq-live-kit's pipeline, turn detection and endpointing settings included | ~2 s between turns | no |
 
-**Conversational** sends the *answer audio* straight to the model and gets back
-`{transcript, next_question, is_reask, rationale}` in one round trip — no
-separate transcription step, and the model hears hesitation, which is signal for
-when to stop. The ~4.0s turnaround is ~1.2s of silence detection plus ~2.4–3.6s
-of model time, scaling with upload size.
-
-**Realtime** publishes the phone's microphone into a room and lets a deployed
-worker bridge it to a realtime voice model. It is the only mode that needs
-anything outside the phone, and the only one that records video. See
-[realtime.md](realtime.md).
+Each intercept is one topic in pulseiq-live-kit's sense: the study item's
+opening question, its `followUps` as probe questions, a `probeDepth` (the item's
+own, or the intercept budget minus the opener), and the study's scene and
+research goal as the topic's context. The phone sends the topic in the
+intercept brief (`Corvus/InterceptPrompt.swift`). For the pipeline the worker
+renders pulseiq-live-kit's `question.j2`, copied verbatim into
+`agent/prompts/`, installs it, clears the chat context and lets the model ask
+the initial question, exactly as that worker opens a topic; the topic ends with
+its `topic_complete` tool and its interrupt-then-advance. The only Corvus text
+in that prompt is `agent/prompts/corvus_suffix.j2`, appended through the same
+prompt-suffix slot pulseiq-live-kit gives an interview. Realtime keeps the
+phone-composed brief. Everything else — the room, the recording, the
+transcript, the mission manifest — is shared, and the record carries
+`conversation` to say which mode ran.
 
 Every interceptor returns an `InterceptRecord` whether or not it succeeded — an
 intercept that half-happened is still data, and the watcher has to be released
@@ -149,6 +158,15 @@ full-bandwidth output but no microphone; HFP gives both at call quality.
 
 `GlassesAudioSession` selects the glasses **by name**, because a participant's
 earbuds will otherwise win the route and nothing will say so.
+
+The LiveKit microphone engine is kept prepared across calls
+(`setRecordingAlwaysPreparedMode`, set on the first call). Without it the
+second mission of a back-to-back pair captured silence from the glasses' HFP
+microphone: the mic track is rebuilt per mission, and the engine's second start
+against a live Bluetooth input came up dead. The call screen logs an
+`[AudioStats]` line every two seconds with a tap on the capture engine
+(`captured=`, in dBFS) beside the server's speaking flag, which is how to tell a
+phone that captured silence from one that captured nothing.
 
 ## The glasses stream
 
@@ -185,7 +203,9 @@ next.
 | `Corvus/RealtimeMedia.swift`, `Corvus/LiveKitRealtimeMedia.swift` | the only door into upstream's LiveKit session |
 | `Corvus/GlassesStreamQuality.swift` | the stream tier picker; the tier is what selects Wi-Fi or Bluetooth |
 | `Corvus/GlassesLink.swift` | link monitor: per-device link state and thermal diagnostics, the refused-session detector that backs off the retry loop, and the wait-state wording that names which layer is pending |
-| `Corvus/*Interceptor.swift` | the conversational and realtime implementations; the mission coordinator is the third |
+| `Corvus/LiveKitInterceptor.swift`, `Corvus/InterceptPrompt.swift` | the standalone realtime intercept, and the brief and topic the phone composes for either mode |
+| `Corvus/ConversationMode.swift` | the mission's conversation mode setting, realtime or turn based |
+| `agent/corvus_conversation.py`, `agent/corvus_idle.py`, `agent/prompts/` | the worker's two voice profiles, the ported idle clocks and transcript timing, and the topic template |
 | `Corvus/CorvusLog.swift` | the session log |
 | `agent/` | the deployed realtime worker |
 | `web/` | standalone Vercel mission/token service and cleanup watchdog |

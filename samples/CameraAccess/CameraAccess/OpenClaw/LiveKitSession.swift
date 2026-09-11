@@ -114,7 +114,21 @@ final class LiveKitSession: NSObject, ObservableObject {
     // route (the "deafness" bug). start() then picks per capture source, since
     // phone mode has no Bluetooth route to yield to.
     AudioManager.shared.isSpeakerOutputPreferred = false
+    // Meter the capture engine's own output (Corvus/MicLevelMeter.swift): the
+    // one reading upstream of WebRTC, kept so a dead microphone can be told
+    // apart from a quiet participant. See that file for the cases it covers.
+    AudioManager.shared.add(localAudioRenderer: MicLevelMeter.shared)
   }
+
+  /// Set once, on the first call. The second mission of every back-to-back
+  /// pair captured silence from the glasses microphone while the first was
+  /// fine, and the only difference between them is that the second is the
+  /// second start of the SDK's microphone engine in this process (the mic
+  /// track is stopped at mission end and recreated at the next start). The
+  /// SDK's prepared-recording mode keeps that engine initialised across Room
+  /// lifecycles, so later missions reuse the capture path the first one
+  /// opened instead of restarting it against a live Bluetooth HFP input.
+  private var recordingPrepared = false
 
   var isActive: Bool { state == .connected || state == .connecting }
 
@@ -414,6 +428,15 @@ final class LiveKitSession: NSObject, ObservableObject {
       try await room.connect(url: ticket.url, token: ticket.token)
       guard generation == startGeneration, !Task.isCancelled else { await room.disconnect(); return }
       stage = "microphone"
+      if !recordingPrepared {
+        do {
+          try await AudioManager.shared.setRecordingAlwaysPreparedMode(true)
+          recordingPrepared = true
+          NSLog("[Audio] recording engine kept prepared across calls")
+        } catch {
+          NSLog("[Audio] could not enable prepared recording: %@", String(describing: error))
+        }
+      }
       try await room.localParticipant.setMicrophone(enabled: true)
       guard generation == startGeneration, !Task.isCancelled else { await room.disconnect(); return }
       // Diagnose the audio route: do the glasses appear as a Bluetooth HFP input,
@@ -595,6 +618,23 @@ final class LiveKitSession: NSObject, ObservableObject {
           @unknown default: appState = "unknown"
           }
           NSLog("[VideoStats] app=%@ | publishing %@ | sent to server %@", appState, publishing, sent)
+        }
+        // Same cadence for the microphone. Three readings from three places:
+        // `captured` is a tap on the capture engine itself (MicLevelMeter,
+        // the only reading upstream of WebRTC); `level`/`speaking` are the
+        // server's view of the published track; the ports are the live iOS
+        // route. When a mission hears nothing, the pattern across the three
+        // says where it died -- see MicLevelMeter for the cases it is kept for.
+        if tick % 3 == 0, self.state == .connected {
+          let local = self.room.localParticipant
+          let mic = local.audioTracks.first
+          let route = AVAudioSession.sharedInstance().currentRoute
+          NSLog("[AudioStats] %@ | level=%.3f speaking=%@ mic=%@ in=[%@] out=[%@]",
+                MicLevelMeter.shared.snapshot(),
+                local.audioLevel, local.isSpeaking ? "yes" : "no",
+                mic == nil ? "none" : (mic?.isMuted == true ? "muted" : "on"),
+                route.inputs.map { $0.portType.rawValue }.joined(separator: ","),
+                route.outputs.map { $0.portType.rawValue }.joined(separator: ","))
         }
         // Give the glasses video a grace to establish before falling back from
         // the connecting spinner to the "put them on" reminder.

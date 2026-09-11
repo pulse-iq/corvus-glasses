@@ -1,19 +1,33 @@
-"""A fresh realtime model connection prepared between interviews, never at trigger."""
+"""A fresh voice session prepared between interviews, never at trigger.
+
+Mode-agnostic: `VoiceProfile` (corvus_conversation.py) supplies the session,
+the greeting, and the opening of an interview for realtime or turn-based; this
+class owns the lifecycle around them -- prepare, greet, interview, interrupt,
+close -- and the transcript.
+"""
 
 import asyncio
 import re
 import time
 
-from livekit.agents import Agent, AgentSession, RunContext, function_tool
+from livekit.agents import Agent, AgentSession
 from livekit.agents.voice.room_io import RoomOptions
+
+from corvus_conversation import REALTIME, VoiceProfile
+from corvus_idle import IdleController, turn_at
+
+INTERVIEW_CEILING_SECONDS = 180
 
 
 class MissionVoice:
-    def __init__(self, room, phone, model_factory):
+    def __init__(self, room, phone, profile):
         self.room = room
         self.phone = phone
-        self.model_factory = model_factory
+        # A bare model factory is the realtime profile, spelled the old way.
+        self.profile = profile if isinstance(profile, VoiceProfile) else VoiceProfile(REALTIME, profile)
+        self.mode = self.profile.mode
         self.session = None
+        self.idle = None
         self.agent = None
         self.turns = []
         self.over = asyncio.Event()
@@ -41,16 +55,14 @@ class MissionVoice:
         self.turns = []
         self.over = asyncio.Event()
 
-        @function_tool
-        async def end_intercept(ctx: RunContext):
-            """Call after your closing line. End only this product interview. Say nothing afterward."""
-            self.over.set()
-
+        # The hang-up tool is the profile's: realtime keeps end_intercept, the
+        # pipeline gets pulseiq-live-kit's topic_complete.
+        end_tool = self.profile.end_tool(self.over, lambda: self.session)
         self.agent = Agent(
             instructions="Stay silent until explicitly instructed to greet or conduct an interview. Follow the complete study brief supplied with the begin command as your interview policy. Do not respond to ambient audio.",
-            tools=[end_intercept],
+            tools=[end_tool],
         )
-        self.session = session = AgentSession(llm=self.model_factory())
+        self.session = session = self.profile.make_session(AgentSession)
         participant = getattr(self.room, "local_participant", None)
         self.track_baselines[session] = (
             set(participant.track_publications) if participant else set()
@@ -90,9 +102,8 @@ class MissionVoice:
                 and item.role in ("user", "assistant")
                 and text
             ):
-                self.turns.append(
-                    dict(role=item.role, text=text, atMs=int(item.created_at * 1000))
-                )
+                at = turn_at(item, item.role) or item.created_at
+                self.turns.append(dict(role=item.role, text=text, atMs=int(at * 1000)))
                 if item.role == "user":
                     self.last_user = time.monotonic()
 
@@ -114,6 +125,7 @@ class MissionVoice:
                 room=self.room,
                 room_options=RoomOptions(
                     participant_identity=self.phone,
+                    audio_input=self.profile.room_audio_input(),
                     text_input=False,
                     video_input=False,
                     close_on_disconnect=False,
@@ -122,6 +134,11 @@ class MissionVoice:
             )
             self.session.input.set_audio_enabled(False)
             self.session.output.set_audio_enabled(False)
+            if not self.profile.realtime:
+                # The metrics handshake above is how a realtime connection
+                # announces itself; a pipeline has nothing to connect until it
+                # speaks, so room audio readiness is the whole wait.
+                ready.set()
 
             async def all_ready():
                 await asyncio.gather(ready.wait(), session.room_io.wait_for_ready())
@@ -155,9 +172,7 @@ class MissionVoice:
             return
         self.session.output.set_audio_enabled(True)
         try:
-            speech = self.session.generate_reply(
-                user_input="Please greet the shopper now. Say exactly: " + text,
-            )
+            speech = self.profile.greet(self.session, text)
             await speech.wait_for_playout()
             if error := speech.exception():
                 raise RuntimeError("Welcome speech generation failed") from error
@@ -181,12 +196,19 @@ class MissionVoice:
         self.over.clear()
         self.session.output.set_audio_enabled(True)
         self.session.input.set_audio_enabled(True)
-        self.session.generate_reply(
-            instructions="Conduct this interview following the complete study brief:\n"
-            + brief["instructions"]
-            + "\nBegin now. Say this opening question exactly: "
-            + brief["openingQuestion"]
+        # Two clocks over the session's speaking states (corvus_idle.py): a
+        # spoken nudge on the pipeline, and the silence exit for both modes. The
+        # loop below keeps its own coarse silence check as a backstop for a
+        # session whose state events never arrive.
+        self.idle = IdleController(
+            self.session,
+            exit_seconds=self.profile.idle_exit_seconds,
+            exit_fn=self._idle_exit,
+            prompt_seconds=self.profile.idle_prompt_seconds,
+            prompt_fn=None if self.profile.realtime else self._idle_prompt,
         )
+        self.idle.start()
+        await self.profile.begin_interview(self.session, self.agent, brief)
         start = time.monotonic()
         try:
             while not self.over.is_set():
@@ -194,10 +216,12 @@ class MissionVoice:
                     await asyncio.wait_for(self.over.wait(), 1)
                 except asyncio.TimeoutError:
                     pass
-                if time.monotonic() - start >= 180:
+                if self.reason != "completed":
+                    break
+                if time.monotonic() - start >= INTERVIEW_CEILING_SECONDS:
                     self.reason = "interview_time_limit"
                     break
-                if time.monotonic() - self.last_user >= 45:
+                if time.monotonic() - self.last_user >= self.profile.idle_exit_seconds:
                     self.reason = "silence_timeout"
                     break
             if self.reason == "completed":
@@ -213,12 +237,27 @@ class MissionVoice:
             )
         finally:
             self.active = False
+            if self.idle:
+                self.idle.stop()
+                self.idle = None
             self.session.input.set_audio_enabled(False)
             self.session.output.set_audio_enabled(False)
+
+    async def _idle_prompt(self):
+        if self.session and self.active:
+            self.profile.idle_prompt(self.session)
+
+    async def _idle_exit(self):
+        if self.active and self.reason == "completed":
+            self.reason = "silence_timeout"
+            self.over.set()
 
     async def interrupt(self, reason):
         self.reason = reason
         self.active = False
+        if self.idle:
+            self.idle.stop()
+            self.idle = None
         if self.session:
             self.session.input.set_audio_enabled(False)
             self.session.output.set_audio_enabled(False)

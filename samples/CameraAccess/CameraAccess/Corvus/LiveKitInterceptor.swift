@@ -11,7 +11,7 @@ import Foundation
 /// app launched rather than when someone picked up a bottle, and that nobody
 /// told the model it was conducting an intercept.
 ///
-/// What this buys over `ConversationalInterceptor` is the four seconds between
+/// What this buys over a turn-based pipeline is the four seconds between
 /// someone finishing a sentence and hearing the next question. The model is
 /// listening while they speak, so there is nothing to upload and nothing to
 /// wait for. What it costs is a running worker and a room -- and the ability to

@@ -46,13 +46,19 @@ export function validateMission(input: Record<string, unknown>) {
     !/^[a-zA-Z0-9._:-]{1,200}$/.test(input.sessionId)
   )
     throw new MissionError('Invalid sessionId', 400);
+  // How the worker talks: one realtime model, or the turn-based pipeline. Older
+  // phones send nothing and get realtime, which is what they always had.
+  const conversation = input.conversation ?? 'realtime';
+  if (conversation !== 'realtime' && conversation !== 'turnBased')
+    throw new MissionError('Invalid conversation mode', 400);
   return {
     mode: 'mission' as const,
     version: 1,
     missionId: uuid(input.missionId),
     segmentId: uuid(input.segmentId),
     sessionId: input.sessionId,
-    studyId: input.studyId
+    studyId: input.studyId,
+    conversation
   };
 }
 type Mission = ReturnType<typeof validateMission>;

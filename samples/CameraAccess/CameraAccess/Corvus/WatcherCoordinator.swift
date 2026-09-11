@@ -61,7 +61,8 @@ final class WatcherCoordinator: ObservableObject {
     self.study = study
     self.detector = CorvusConfig.activeDetector.make()
     self.machine = TriggerStateMachine(study: study)
-    self.interceptor = CorvusConfig.interceptor.make()
+    // Nothing until a room is attached: a trigger is logged, shown and released.
+    self.interceptor = nil
   }
 
   /// The realtime interceptor talks through the call screen's own room, so it
@@ -71,15 +72,7 @@ final class WatcherCoordinator: ObservableObject {
 
   func attach(media: any RealtimeMedia) {
     self.media = media
-    if CorvusConfig.interceptor == .liveKit {
-      interceptor = InterceptorKind.liveKit.make(media: media)
-    }
-  }
-
-  func use(_ kind: InterceptorKind) {
-    interceptor?.cancel()
-    interceptor = kind.make(media: media)
-    CorvusConfig.interceptor = kind
+    interceptor = LiveKitInterceptor(session: media)
   }
 
   /// Switch studies. Rebuilds the machine rather than mutating it: cooldowns
@@ -267,7 +260,7 @@ final class WatcherCoordinator: ObservableObject {
     let study = self.study
     // The frame that fired the trigger, so the interceptor can be concrete
     // about the actual product rather than the category.
-    let frame = CorvusConfig.sendTriggerFrameToBrain ? jpeg : nil
+    let frame = jpeg
     let generation = runGeneration
     Task { [weak self] in
       let record = await interceptor.conduct(trigger, study: study, frame: frame)

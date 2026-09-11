@@ -16,6 +16,15 @@ describe('mission production boundary', () => {
       validateMission({ ...request, missionId: '../escape' })
     ).toThrow();
   });
+  it('forwards the conversation mode and defaults it to realtime', () => {
+    expect(validateMission(request).conversation).toBe('realtime');
+    expect(
+      validateMission({ ...request, conversation: 'turnBased' }).conversation
+    ).toBe('turnBased');
+    expect(() =>
+      validateMission({ ...request, conversation: 'scripted' })
+    ).toThrow();
+  });
   it('one durable claim wins concurrent starts; subsequent start cannot allocate', async () => {
     const data = new Map();
     const redis = {

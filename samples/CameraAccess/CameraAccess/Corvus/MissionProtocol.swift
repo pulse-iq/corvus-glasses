@@ -42,6 +42,19 @@ struct MissionPayload: Codable {
   var transcriptOverflow: Bool?
   var resultKey: String?
   var turns: [MissionTranscriptTurn]?
+  /// The intercept as a topic, for the turn-based conversation mode.
+  var topic: MissionTopic?
+  /// Which conversation mode the worker ran; echoed back on the record.
+  var conversation: String?
+}
+/// One intercept in pulseiq-live-kit's terms: an opening question asked word
+/// for word, probe questions as a guide, a hard cap on follow-ups, and context
+/// the model may steer by but never speak.
+struct MissionTopic: Codable, Equatable {
+  var question: String
+  var probeQuestions: [String]
+  var probeDepth: Int
+  var context: String?
 }
 struct MissionTranscriptTurn: Codable, Equatable {
   let role: String
