@@ -150,6 +150,26 @@ full-bandwidth output but no microphone; HFP gives both at call quality.
 `GlassesAudioSession` selects the glasses **by name**, because a participant's
 earbuds will otherwise win the route and nothing will say so.
 
+## The glasses stream
+
+The stream view model (upstream VisionClaw code) owns the DAT session and
+camera; `Corvus/GlassesLink.swift` watches it and names the wait. Settings has
+three levers -- tier, frame rate, codec -- and changing one replaces the camera
+on the live session: stop the old camera, wait for the SDK to report it
+detached, add the new one. A second change while a replacement is still
+starting is held and applied 1.5 s after the new stream comes up.
+
+**Known behaviour, deliberately left to the self-heal.** A replacement that
+asks for the high tier (720p, or 30 fps) soon after a camera teardown fails
+with `videoStreamingError` within about 150 ms, whether the settle is 1.5 s or
+4 s. Stepping down never failed in testing. When a stream stops for any reason
+while the session survives, the view model detaches the dead camera and adds a
+new one, which brings video back in about 7 s; the retry loop then restarts the
+session if the SDK still reports a stale capability. This is the recovery
+missions rely on for any mid-stream stop, and it is what covers the lever case
+too. When testing levers, change one, let the picture return, then change the
+next.
+
 ## Where things live
 
 | Path | What |
@@ -165,7 +185,7 @@ earbuds will otherwise win the route and nothing will say so.
 | `Corvus/RealtimeMedia.swift`, `Corvus/LiveKitRealtimeMedia.swift` | the only door into upstream's LiveKit session |
 | `Corvus/GlassesStreamQuality.swift` | the stream tier picker; the tier is what selects Wi-Fi or Bluetooth |
 | `Corvus/GlassesLink.swift` | link monitor: per-device link state and thermal diagnostics, the refused-session detector that backs off the retry loop, and the wait-state wording that names which layer is pending |
-| `Corvus/*Interceptor.swift` | the three implementations |
+| `Corvus/*Interceptor.swift` | the conversational and realtime implementations; the mission coordinator is the third |
 | `Corvus/CorvusLog.swift` | the session log |
 | `agent/` | the deployed realtime worker |
 | `web/` | standalone Vercel mission/token service and cleanup watchdog |

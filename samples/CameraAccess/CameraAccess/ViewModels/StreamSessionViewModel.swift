@@ -724,6 +724,7 @@ class StreamSessionViewModel: ObservableObject {
 
   private func updateStatusFromState(_ state: StreamState) {
     NSLog("[Stream] stream state: %@", String(describing: state))
+    GlassesLinkMonitor.shared.noteStreamState(state)
     switch state {
     case .stopped:
       currentVideoFrame = nil
@@ -757,8 +758,18 @@ class StreamSessionViewModel: ObservableObject {
       replacingCamera = false
       if pendingConfigRestart {
         // Settings changed again while the last replacement was starting.
+        // Applied after a short settle. Replacing a stream 8 ms into streaming
+        // produced videoStreamingError on the replacement; 1.5 s fixed that
+        // case. A replacement that asks for the high tier right after a
+        // teardown errors the same way at 1.5 s and at 4 s alike, so the delay
+        // is not the lever for it: the detach path below recovers it in ~7 s,
+        // and a longer wait only adds to what the user sits through.
         pendingConfigRestart = false
-        restartCameraForNewConfig()
+        Task { @MainActor [weak self] in
+          try? await Task.sleep(nanoseconds: 1_500_000_000)
+          guard let self, self.streamingStatus == .streaming else { return }
+          self.restartCameraForNewConfig()
+        }
       }
     }
   }

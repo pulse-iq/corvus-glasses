@@ -92,6 +92,11 @@ struct LiveKitStreamView: View {
         }
         .multilineTextAlignment(.center)
         .padding(.horizontal, 32)
+        // Over a frozen last frame the text needs a ground of its own, and the
+        // dimming is itself the signal that the picture is no longer live.
+        .padding(.vertical, 20)
+        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 24)
       }
 
       if case .failed(let why) = session.state {

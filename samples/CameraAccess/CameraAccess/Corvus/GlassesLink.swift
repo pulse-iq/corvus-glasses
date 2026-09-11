@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import MWDATCamera
 import MWDATCore
 
 /// Corvus's eyes on the glasses link, one layer below the LiveKit seam.
@@ -39,6 +40,7 @@ final class GlassesLinkMonitor: ObservableObject {
   @Published private(set) var activeDeviceName: String?
   @Published private(set) var linkState: LinkState?
   @Published private(set) var sessionState: DeviceSessionState?
+  @Published private(set) var streamState: StreamState?
   @Published private(set) var refusals = 0
 
   private var wearables: (any WearablesInterface)?
@@ -145,6 +147,7 @@ final class GlassesLinkMonitor: ObservableObject {
     if id == nil {
       refusals = 0
       sessionState = nil
+      streamState = nil
     }
   }
 
@@ -183,6 +186,10 @@ final class GlassesLinkMonitor: ObservableObject {
       sessionStartingAt = nil
       sessionStartedAt = nil
     }
+  }
+
+  func noteStreamState(_ state: StreamState) {
+    streamState = state
   }
 
   func noteSessionError(_ error: DeviceSessionError) {
@@ -228,6 +235,12 @@ final class GlassesLinkMonitor: ObservableObject {
     }
     if sessionState == .paused {
       return ("Glasses paused", "Tap the glasses to resume, or wait for the session to come back.")
+    }
+    if sessionState == .started, streamState == .streaming {
+      // Every layer reports up and frames still stopped. The one state with
+      // no name from the SDK, so say exactly that much.
+      return ("No video from the glasses",
+              "They are connected and the camera session is up, but frames stopped arriving. Waiting for them to resume.")
     }
     return ("Glasses connected", "Starting the camera.")
   }

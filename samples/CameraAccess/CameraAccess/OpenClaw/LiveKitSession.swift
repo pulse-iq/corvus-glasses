@@ -280,6 +280,11 @@ final class LiveKitSession: NSObject, ObservableObject {
       try await track.start()
       previewTrack = track
       attachGrabber(to: track)
+      // The stale-frame watchdog used to run only during a call, so a glasses
+      // preview that lost its source kept the last frame on screen with no
+      // message. The preview is where people wait for the glasses, so it
+      // needs the watchdog most.
+      if usingGlassesSource { startGlassesFrameMonitor() }
     } catch {
       NSLog("[LiveKit] preview camera unavailable: %@", error.localizedDescription)
     }
@@ -344,6 +349,12 @@ final class LiveKitSession: NSObject, ObservableObject {
       previewTrack = nil
       try? await track.stop()
     }
+    glassesFrameMonitor?.cancel()
+    glassesFrameMonitor = nil
+    glassesCapturerBox.sawFrame = false
+    glassesCapturerBox.lastFrameAt = 0
+    hasGlassesFrame = false
+    glassesFrameStale = false
   }
 
   func start() async {
