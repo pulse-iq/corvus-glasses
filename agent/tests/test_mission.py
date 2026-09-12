@@ -394,3 +394,62 @@ class PrefixTests(unittest.TestCase):
             now=lambda: 1789018699128,
         )
         self.assertEqual(m.prefix, "hack/missions/2026-09-10T05-38-19Z")
+
+
+class Wake:
+    def __init__(self):
+        self.on_wake = None
+        self.enabled = False
+        self.starts = 0
+        self.closed = False
+
+    async def start(self):
+        self.starts += 1
+
+    async def aclose(self):
+        self.closed = True
+
+
+class WakeMissionTests(MissionTests):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.wake = Wake()
+
+        async def send(ev):
+            self.events.append(ev)
+
+        self.m = MissionSession(
+            self.meta, "phone", self.voice, self.rec, self.store, self.room, send,
+            now=lambda: self.now, wake=self.wake,
+        )
+
+    async def test_wake_listens_only_when_asked_and_runs_an_intercept(self):
+        await self.ready()
+        self.assertEqual(self.wake.starts, 1)
+        self.assertFalse(self.wake.enabled)  # phone has not asked for it
+        await self.m.on_wake({"utterance": "hey corvus", "request": ""})
+        self.assertEqual(self.voice.calls, [])
+        await self.m.handle(self.cmd("client_ready", cameraReady=True, wakeWord=True), "phone")
+        self.assertTrue(self.wake.enabled)
+        await self.m.on_wake({"utterance": "hey corvus what is this", "request": "what is this"})
+        await self.drain()
+        self.assertEqual(len(self.voice.calls), 1)
+        self.assertEqual(self.m.phase, "interviewing")
+        self.assertFalse(self.wake.enabled)  # not while the interview runs
+        self.assertIn("wake", [e["type"] for e in self.events])
+        # A vision trigger from the phone is refused meanwhile, as always.
+        reply = await self.m.handle(
+            self.cmd("begin_intercept", studyId="s", itemId="i", itemName="n", instructions="x",
+                     openingQuestion="q", triggeredAtMs=self.now) | {"interceptId": str(uuid4())},
+            "phone",
+        )
+        self.assertEqual(reply["type"], "rejected")
+        self.voice.done.set()
+        await self.drain()
+        record = next(iter(self.m.results.values()))
+        self.assertEqual((record["primitive"], record["kind"], record["itemName"]), ("wake", "wake", "Hey Corvus"))
+        self.assertEqual(record["wakeUtterance"], "hey corvus what is this")
+        self.assertEqual(self.m.phase, "shopping")
+        self.assertTrue(self.wake.enabled)
+        await self.m.end("test_end")
+        self.assertTrue(self.wake.closed)

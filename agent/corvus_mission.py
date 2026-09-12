@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+from corvus_conversation import WAKE_KIND, WAKE_PHRASE
+
 logger = logging.getLogger("corvus-mission")
 COMMAND_TOPIC = "corvus.mission.command"
 
@@ -40,10 +42,18 @@ class MissionSession:
         *,
         now=None,
         prefix=None,
+        wake=None,
     ):
         self.meta = metadata
         self.phone = phone
         self.voice = voice
+        # "Hey Corvus" (corvus_wake.py). The listener runs for the whole
+        # mission once started; the phone's heartbeat says whether the wearer
+        # wants it, and the phase says when it may fire.
+        self.wake = wake
+        self.wake_word = False
+        if wake is not None:
+            wake.on_wake = self.on_wake
         self.recording = recording
         self.store = store
         self.room = room
@@ -102,7 +112,59 @@ class MissionSession:
         return ev
 
     async def state(self):
+        self._sync_wake()
         await self.emit("state", self.snapshot())
+
+    def _sync_wake(self):
+        """Listening only while the wearer asked for it and an intercept could
+        actually start: shopping, voice prepared, camera up."""
+        if self.wake is not None:
+            self.wake.enabled = bool(
+                self.wake_word and self.phase == "shopping" and self.voice_ready and self.camera
+            )
+
+    async def _start_wake(self):
+        if self.wake is None:
+            return
+        try:
+            await asyncio.wait_for(self.wake.start(), 30)
+        except Exception:
+            # The mission goes on without it; a missing wake word is not a
+            # reason to lose a shopping trip.
+            logger.exception("wake listener failed to start; wake word off")
+            self.wake = None
+
+    async def on_wake(self, hit):
+        """The listener heard the wearer address Corvus. Run it as an intercept
+        the worker originates: same phases, same record, `primitive` "wake"."""
+        async with self.lock:
+            if not (self.wake_word and self.phase == "shopping" and self.voice_ready and self.camera):
+                logger.info("wake ignored (phase=%s voice_ready=%s)", self.phase, self.voice_ready)
+                return
+            utterance = (hit.get("utterance") or "").strip()
+            request = (hit.get("request") or "").strip()
+            iid = str(uuid4())
+            brief = dict(
+                kind=WAKE_KIND,
+                studyId=self.meta.get("studyId") or "unknown",
+                itemId="wake",
+                itemName=WAKE_PHRASE,
+                openingQuestion=request or utterance,
+                instructions="",
+                topic=dict(question=request or utterance, probeQuestions=[], probeDepth=1, context=None),
+                triggeredAtMs=self.now(),
+                primitive="wake",
+                confidence=1.0,
+                wakeUtterance=utterance,
+                wakeRequest=request,
+            )
+            self.phase = "interviewing"
+            self.voice_ready = False
+            self.active = (iid, brief)
+            self._sync_wake()
+            await self.emit("wake", dict(utterance=utterance, request=request), intercept=iid)
+            self.interview_task = asyncio.create_task(self.interview(iid, brief))
+            await self.state()
 
     async def persist(self, **extra):
         await self.store.put(
@@ -122,7 +184,9 @@ class MissionSession:
         try:
             async with asyncio.timeout(45):
                 await self.persist()
-                await asyncio.gather(self.voice.prepare(), self.recording.start())
+                await asyncio.gather(
+                    self.voice.prepare(), self.recording.start(), self._start_wake()
+                )
                 await self.ready.wait()
                 while not self.camera or self.now() - self.heartbeat > 6000:
                     self.ready.clear()
@@ -230,6 +294,7 @@ class MissionSession:
         if kind == "client_ready":
             self.heartbeat = self.now()
             self.camera = p.get("cameraReady") is True
+            self.wake_word = p.get("wakeWord") is True
             if self.camera:
                 self.ready.set()
             else:
@@ -426,6 +491,11 @@ class MissionSession:
             await self.voice.close()
         except Exception:
             logger.exception("voice close failed")
+        if self.wake is not None:
+            try:
+                await self.wake.aclose()
+            except Exception:
+                logger.exception("wake listener close failed")
         try:
             await self.persist(endedBecause=reason)
         except Exception:
@@ -476,6 +546,17 @@ async def run_mission(ctx, participant, metadata, engine, model_factory):
             destination_identities=[participant.identity],
         )
 
+    preloaded_vad = getattr(getattr(ctx, "proc", None), "userdata", {}).get("vad")
+    wake = None
+    try:
+        from corvus_wake import GeminiWakeClassifier, WakeListener
+
+        wake = WakeListener(
+            ctx.room, participant.identity, classifier=GeminiWakeClassifier(), vad=preloaded_vad
+        )
+    except Exception:
+        logger.exception("wake listener unavailable; wake word off for this mission")
+
     # One prefix for the recording and the manifest, fixed at the moment the
     # worker takes up the mission, so the two cannot land in different folders.
     prefix = mission_prefix(int(time.time() * 1000))
@@ -485,17 +566,14 @@ async def run_mission(ctx, participant, metadata, engine, model_factory):
         MissionVoice(
             ctx.room,
             participant.identity,
-            VoiceProfile(
-                mode_from_metadata(metadata),
-                model_factory,
-                vad=getattr(getattr(ctx, "proc", None), "userdata", {}).get("vad"),
-            ),
+            VoiceProfile(mode_from_metadata(metadata), model_factory, vad=preloaded_vad),
         ),
         MissionRecording(ctx.room.name, prefix),
         MissionStore(),
         Room(),
         send,
         prefix=prefix,
+        wake=wake,
     )
     mission.recording.on_started = mission.persist
     tasks = set()

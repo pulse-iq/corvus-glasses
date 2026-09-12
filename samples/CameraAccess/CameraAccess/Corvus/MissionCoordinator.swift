@@ -106,6 +106,7 @@ final class MissionCoordinator: ObservableObject, Interceptor {
     guard generation == lifecycle.generation, !Task.isCancelled else { return }
     if ready, let image = session.latestFrame { watcher?.submit(image: image) }
     var payload = MissionPayload(); payload.cameraReady = ready; payload.microphoneReady = ready
+    payload.wakeWord = WakeWord.enabled
     try? await transport?.send(command("client_ready", payload: payload))
   }
 
@@ -143,6 +144,8 @@ final class MissionCoordinator: ObservableObject, Interceptor {
         record.endedAt = p.endedAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
         record.endedBecause = p.endedBecause; record.abortReason = p.abortReason
         record.missionID = missionID; record.segmentID = segmentID; record.recordingKey = p.recordingKey
+        // A wake intercept is the worker's own; the phone first hears of it here.
+        if record.primitive == nil { record.primitive = p.primitive }
         record.authoritativeTurns = p.turns
         record.recordingOffsetSeconds = p.recordingStartedAtMs.map { record.triggeredAt.timeIntervalSince1970 - $0 / 1000 }
         var turns: [InterceptTurn] = []

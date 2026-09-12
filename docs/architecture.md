@@ -147,6 +147,26 @@ Every interceptor returns an `InterceptRecord` whether or not it succeeded — a
 intercept that half-happened is still data, and the watcher has to be released
 either way. A failed one carries `abortReason`.
 
+### "Hey Corvus" (proof of concept)
+
+With the Settings → Mission voice toggle on, the wearer can start a
+conversation at any point in a mission by addressing Corvus by name. The
+phone's heartbeat carries the setting (`wakeWord`), so it can be flipped
+mid-mission. On the worker, `agent/corvus_wake.py` runs a second, mute
+`AgentSession` on the same microphone track during the shopping phase — Deepgram
+with keyterm prompting for the name, Silero, the multilingual turn detector,
+no language model — and each finished user turn goes to a short Gemini Flash
+call (`prompts/wake_classify.j2`) that says whether the wearer meant Corvus.
+No model listens between turns. A wake becomes an intercept the worker
+originates rather than the phone: same phases and record, `primitive` `wake`,
+`itemName` "Hey Corvus", and the brief carries what the wearer said so they are
+not asked to repeat it. The conversation runs in whichever mode is set, with
+its own answering template (`wake_realtime.j2` or `wake_topic.j2`) instead of
+the study topic. The phone learns of it through the ordinary `state` and
+`intercept_completed` events, which already suppress vision triggers while the
+worker is interviewing and file records it did not start. The listener is
+gated off during interviews so a conversation is not transcribed twice.
+
 ## Audio
 
 The DAT SDK is camera-only; its entire permission set is `camera`. Glasses audio
@@ -205,6 +225,7 @@ next.
 | `Corvus/GlassesLink.swift` | link monitor: per-device link state and thermal diagnostics, the refused-session detector that backs off the retry loop, and the wait-state wording that names which layer is pending |
 | `Corvus/LiveKitInterceptor.swift`, `Corvus/InterceptPrompt.swift` | the standalone realtime intercept, and the brief and topic the phone composes for either mode |
 | `Corvus/ConversationMode.swift` | the mission's conversation mode setting, realtime or turn based |
+| `Corvus/WakeWord.swift` | the "Hey Corvus" setting; the listener itself is `agent/corvus_wake.py` |
 | `agent/corvus_conversation.py`, `agent/corvus_idle.py`, `agent/prompts/` | the worker's two voice profiles, the ported idle clocks and transcript timing, and the topic template |
 | `Corvus/CorvusLog.swift` | the session log |
 | `agent/` | the deployed realtime worker |

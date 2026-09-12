@@ -56,6 +56,7 @@ struct SettingsView: View {
   @AppStorage("corvus.interceptsEnabled") private var interceptsEnabled = true
   @AppStorage("corvus.audioRouteMode") private var audioRouteRaw = AudioRouteMode.glassesBothWays.rawValue
   @AppStorage(ConversationMode.defaultsKey) private var conversationRaw = ConversationMode.realtime.rawValue
+  @AppStorage(WakeWord.defaultsKey) private var wakeWord = false
   @AppStorage(GlassesStreamQuality.defaultsKey) private var streamQualityRaw = GlassesStreamQuality.high.rawValue
   @AppStorage(GlassesStreamFrameRate.defaultsKey) private var streamFrameRateRaw = GlassesStreamFrameRate.fps15.rawValue
   @AppStorage(GlassesStreamCodec.defaultsKey) private var streamCodecRaw = GlassesStreamCodec.hevc.rawValue
@@ -154,7 +155,8 @@ struct SettingsView: View {
         // takes effect at the next mission rather than mid-conversation.
         Section(header: Text("Mission voice"), footer: Text(
           (ConversationMode(rawValue: conversationRaw) ?? .realtime)
-            .footer(engine: IntelligenceEngine(rawValue: intelligenceRaw) ?? .openai))) {
+            .footer(engine: IntelligenceEngine(rawValue: intelligenceRaw) ?? .openai)
+            + (wakeWord ? " " + WakeWord.footer : ""))) {
           Picker("Conversation", selection: $conversationRaw) {
             ForEach(ConversationMode.allCases) { mode in
               Text(mode.label).tag(mode.rawValue)
@@ -169,6 +171,7 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
           }
+          Toggle("\u{201C}\(WakeWord.phrase)\u{201D}", isOn: $wakeWord)
           Toggle("Show captions", isOn: $showCaptions)
         }
 

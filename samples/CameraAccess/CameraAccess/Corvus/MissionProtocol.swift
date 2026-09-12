@@ -16,6 +16,8 @@ struct MissionPayload: Codable {
   var interviews: [MissionPayload]?
   var cameraReady: Bool?
   var microphoneReady: Bool?
+  /// On the heartbeat: whether the wearer wants "Hey Corvus" listened for.
+  var wakeWord: Bool?
   var studyId: String?
   var itemId: String?
   var itemName: String?
@@ -46,6 +48,11 @@ struct MissionPayload: Codable {
   var topic: MissionTopic?
   /// Which conversation mode the worker ran; echoed back on the record.
   var conversation: String?
+  /// `wake` for an intercept the worker started because the wearer said
+  /// "Hey Corvus"; absent for the phone's vision-triggered ones.
+  var kind: String?
+  var wakeUtterance: String?
+  var wakeRequest: String?
 }
 /// One intercept in pulseiq-live-kit's terms: an opening question asked word
 /// for word, probe questions as a guide, a hard cap on follow-ups, and context

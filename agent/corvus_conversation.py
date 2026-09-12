@@ -76,6 +76,12 @@ REALTIME_IDLE_EXIT_SECONDS = float(os.environ.get("CORVUS_IDLE_EXIT_SECONDS", "4
 # messages.py.
 INSTRUCTIONS_ID = "lk.agent_task.instructions"
 
+# "Hey Corvus" (corvus_wake.py). A wake is an intercept of this kind: the brief
+# carries what the wearer said instead of a study topic, and each mode has its
+# own template for answering rather than interviewing.
+WAKE_PHRASE = "Hey Corvus"
+WAKE_KIND = "wake"
+
 try:
     from livekit.agents.voice.agent_session import TurnHandlingOptions
     from livekit.agents.voice.room_io import AudioInputOptions
@@ -98,7 +104,8 @@ def mode_from_metadata(meta: dict) -> str:
 
 # ---------------------------------------------------------------- the topic prompt
 
-_templates = Environment(loader=FileSystemLoader(Path(__file__).parent / "prompts"))
+templates = Environment(loader=FileSystemLoader(Path(__file__).parent / "prompts"))
+_templates = templates
 
 
 def topic_from_brief(brief: dict) -> dict:
@@ -141,6 +148,17 @@ def render_topic_prompt(topic: dict) -> str:
     return prompt
 
 
+def render_wake_prompt(mode: str, brief: dict) -> str:
+    """The answering prompt for a wake intercept: ``wake_realtime.j2`` as the
+    realtime model's reply instructions, ``wake_topic.j2`` as the pipeline's
+    system prompt. Proof-of-concept wording, not pulseiq-live-kit's."""
+    name = "wake_realtime.j2" if mode == REALTIME else "wake_topic.j2"
+    return _templates.get_template(name).render(
+        utterance=(brief.get("wakeUtterance") or brief.get("openingQuestion") or "").strip(),
+        request=(brief.get("wakeRequest") or "").strip(),
+    ).strip()
+
+
 # ---------------------------------------------------------------- the sessions
 
 _vad = None
@@ -160,6 +178,27 @@ def vad(preloaded=None):
     return _vad
 
 
+def build_text_model(temperature: float = 0.2):
+    """pulseiq-live-kit's text model: Gemini Flash, thinking off."""
+    if PIPELINE_IMPORT_ERROR is not None:
+        raise RuntimeError("the text model needs the google plugin (see requirements.txt)") from PIPELINE_IMPORT_ERROR
+    return google.LLM(
+        model=LLM_MODEL,
+        api_key=os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or None,
+        temperature=temperature,
+        thinking_config={"thinking_budget": 0},
+    )
+
+
+def pipeline_audio_input():
+    """pulseiq-live-kit runs Background Voice Cancellation on the room's audio
+    input (a LiveKit Cloud feature); a shop floor wants it at least as much as
+    an interview room does."""
+    if PIPELINE_IMPORT_ERROR is not None:
+        return True
+    return AudioInputOptions(noise_cancellation=noise_cancellation.BVC())
+
+
 def build_pipeline_session(session_cls, preloaded_vad=None):
     """pulseiq-live-kit's session, provider for provider and setting for setting."""
     if PIPELINE_IMPORT_ERROR is not None:
@@ -169,12 +208,7 @@ def build_pipeline_session(session_cls, preloaded_vad=None):
         ) from PIPELINE_IMPORT_ERROR
     return session_cls(
         stt=deepgram.STT(model=STT_MODEL, language=STT_LANGUAGE),
-        llm=google.LLM(
-            model=LLM_MODEL,
-            api_key=os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or None,
-            temperature=0.2,
-            thinking_config={"thinking_budget": 0},
-        ),
+        llm=build_text_model(),
         tts=elevenlabs.TTS(
             model=TTS_MODEL,
             voice_id=TTS_VOICE,
@@ -238,12 +272,9 @@ class VoiceProfile:
         return build_pipeline_session(session_cls, self.preloaded_vad)
 
     def room_audio_input(self):
-        """pulseiq-live-kit runs Background Voice Cancellation on the room's
-        audio input (a LiveKit Cloud feature); a shop floor wants it at least
-        as much as an interview room does."""
-        if self.realtime or PIPELINE_IMPORT_ERROR is not None:
-            return True
-        return AudioInputOptions(noise_cancellation=noise_cancellation.BVC())
+        """Background Voice Cancellation for the pipeline, as pulseiq-live-kit
+        has it; the realtime model takes the room audio as is."""
+        return True if self.realtime else pipeline_audio_input()
 
     def end_tool(self, over: asyncio.Event, session_getter):
         """The one tool the model has.
@@ -298,6 +329,15 @@ class VoiceProfile:
         ``generate_reply()`` so the model asks the initial question -- which the
         template requires verbatim.
         """
+        if brief.get("kind") == WAKE_KIND:
+            prompt = render_wake_prompt(self.mode, brief)
+            if self.realtime:
+                session.generate_reply(instructions=prompt)
+                return
+            await agent.update_instructions(prompt)
+            await clear_chat_context(agent)
+            session.generate_reply()
+            return
         if self.realtime:
             session.generate_reply(
                 instructions="Conduct this interview following the complete study brief:\n"
